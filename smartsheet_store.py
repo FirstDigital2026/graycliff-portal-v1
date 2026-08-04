@@ -160,7 +160,14 @@ class SmartsheetStore:
         missing = [column for column in definitions if column[0] not in existing and not column[2]]
         if not missing:
             return
-        payload = [self._column_payload(*column) for column in missing]
+        # Smartsheet requires an explicit zero-based index when adding columns
+        # to an existing sheet. Append schema additions after the current columns.
+        start_index = len(sheet.get("columns", []))
+        payload = []
+        for offset, column in enumerate(missing):
+            item = self._column_payload(*column)
+            item["index"] = start_index + offset
+            payload.append(item)
         self.request("POST", f"/sheets/{sheet_id}/columns", json=payload)
         self._sheet_cache.pop(int(sheet_id), None)
 
