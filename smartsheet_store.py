@@ -19,6 +19,7 @@ CONFIG_PATH = Path(os.environ.get("SMARTSHEET_CONFIG_PATH", "/var/data/graycliff
 CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 MASTER_SHEET = "Graycliff Small Projects - Master"
+JOB_BILLING_SHEET = "Graycliff Job Billing"
 BILLING_SHEET = "Graycliff Billing Batches"
 PAYMENTS_SHEET = "Graycliff Payments"
 MATCHES_SHEET = "Graycliff Payment Matches"
@@ -68,6 +69,29 @@ MASTER_COLUMNS = [
 ]
 
 SHEET_DEFINITIONS = {
+    JOB_BILLING_SHEET: [
+        ("Project ID", "TEXT_NUMBER", True, None),
+        ("Market", "PICKLIST", False, MARKETS),
+        ("Task Name", "TEXT_NUMBER", False, None),
+        ("Job Type", "PICKLIST", False, ["Standard", "Night Cut"]),
+        ("CRQ Number", "TEXT_NUMBER", False, None),
+        ("Work Performed", "TEXT_NUMBER", False, None),
+        ("Billing Status", "PICKLIST", False, BILLING_STATUSES),
+        ("Office Notes", "TEXT_NUMBER", False, None),
+        ("Zoho Invoice ID", "TEXT_NUMBER", False, None),
+        ("Invoice Number", "TEXT_NUMBER", False, None),
+        ("Invoice Date", "DATE", False, None),
+        ("Invoice Amount", "TEXT_NUMBER", False, None),
+        ("Payment Status", "PICKLIST", False, PAYMENT_STATUSES),
+        ("Payment Date", "DATE", False, None),
+        ("Payment Number", "TEXT_NUMBER", False, None),
+        ("Amount Paid", "TEXT_NUMBER", False, None),
+        ("Balance", "TEXT_NUMBER", False, None),
+        ("Billing Fingerprint", "TEXT_NUMBER", False, None),
+        ("Billing Package Path", "TEXT_NUMBER", False, None),
+        ("Created At", "TEXT_NUMBER", False, None),
+        ("Updated At", "TEXT_NUMBER", False, None),
+    ],
     MASTER_SHEET: MASTER_COLUMNS,
     BILLING_SHEET: [
         ("Batch ID", "TEXT_NUMBER", True, None), ("Market", "PICKLIST", False, MARKETS),
@@ -174,17 +198,34 @@ class SmartsheetStore:
         with self._lock:
             if self._config.get("workspace_id") and self._config.get("master_sheet_id"):
                 # Keep existing installations current as the portal schema evolves.
-                for name, key in [
+                sheet_keys = [
                     (MASTER_SHEET, "master_sheet_id"),
+                    (JOB_BILLING_SHEET, "job_billing_sheet_id"),
                     (BILLING_SHEET, "billing_batches_sheet_id"),
                     (PAYMENTS_SHEET, "payments_sheet_id"),
                     (MATCHES_SHEET, "payment_matches_sheet_id"),
                     (USERS_SHEET, "users_sheet_id"),
                     (CONFIG_SHEET, "configuration_sheet_id"),
-                ]:
-                    sheet_id = self._config.get(key)
-                    if sheet_id:
-                        self._ensure_sheet_columns(int(sheet_id), SHEET_DEFINITIONS[name])
+                ]
+                workspace_id = int(self._config["workspace_id"])
+                workspace_detail = self.request("GET", f"/workspaces/{workspace_id}")
+                existing_by_name = {sheet["name"]: int(sheet["id"]) for sheet in workspace_detail.get("sheets", [])}
+                changed = False
+                for name, key in sheet_keys:
+                    sheet_id = self._config.get(key) or existing_by_name.get(name)
+                    if not sheet_id:
+                        payload = {
+                            "name": name,
+                            "columns": [self._column_payload(*column) for column in SHEET_DEFINITIONS[name]],
+                        }
+                        result = self.request("POST", f"/workspaces/{workspace_id}/sheets", json=payload)
+                        sheet_id = int(result["result"]["id"])
+                    if self._config.get(key) != int(sheet_id):
+                        self._config[key] = int(sheet_id)
+                        changed = True
+                    self._ensure_sheet_columns(int(sheet_id), SHEET_DEFINITIONS[name])
+                if changed:
+                    self.save_config()
                 return self._config
 
             all_workspaces: list[dict[str, Any]] = []
@@ -220,6 +261,7 @@ class SmartsheetStore:
             self._config = {
                 "workspace_id": workspace_id,
                 "master_sheet_id": ids[MASTER_SHEET],
+                "job_billing_sheet_id": ids[JOB_BILLING_SHEET],
                 "billing_batches_sheet_id": ids[BILLING_SHEET],
                 "payments_sheet_id": ids[PAYMENTS_SHEET],
                 "payment_matches_sheet_id": ids[MATCHES_SHEET],

@@ -35,11 +35,7 @@ FIELD_MAP = {
     "status": "Status", "assigned_to": "Assigned Technician", "priority": "Priority",
     "date_received": "Date Received", "date_assigned": "Date Assigned", "date_started": "Date Started",
     "date_field_completed": "Date Field Completed", "work_performed": "Work Performed",
-    "manager_notes": "Manager Notes", "customer_notes": "Customer Notes", "billing_status": "Billing Status",
-    "zoho_invoice_id": "Zoho Invoice ID", "invoice_number": "Invoice Number", "invoice_date": "Invoice Date",
-    "invoice_amount": "Invoice Amount", "payment_status": "Payment Status", "payment_date": "Payment Date",
-    "payment_number": "Payment Number", "amount_paid": "Amount Paid", "balance": "Balance",
-    "billing_fingerprint": "Billing Fingerprint", "billing_package_path": "Billing Package Path", "archived": "Archived",
+    "manager_notes": "Manager Notes", "customer_notes": "Customer Notes", "archived": "Archived",
 }
 REVERSE_FIELD_MAP = {v: k for k, v in FIELD_MAP.items()}
 
@@ -62,6 +58,7 @@ def db() -> sqlite3.Connection:
             attachment_id INTEGER PRIMARY KEY,
             project_id TEXT,
             category TEXT,
+            sheet_id TEXT,
             original_filename TEXT,
             uploaded_by TEXT,
             uploaded_at TEXT
@@ -89,6 +86,9 @@ def db() -> sqlite3.Connection:
         );
         """
     )
+    category_columns = {row["name"] for row in connection.execute("PRAGMA table_info(file_categories)").fetchall()}
+    if "sheet_id" not in category_columns:
+        connection.execute("ALTER TABLE file_categories ADD COLUMN sheet_id TEXT")
     existing = connection.execute("SELECT * FROM users WHERE lower(email)=lower(?)", ("admin@firstdigitalsc.com",)).fetchone()
     password_hash = generate_password_hash(ADMIN_PASSWORD)
     if not existing:
@@ -136,6 +136,84 @@ def master_sheet_id() -> int:
     return int(store.config()["master_sheet_id"])
 
 
+def billing_sheet_id() -> int:
+    return int(store.config()["job_billing_sheet_id"])
+
+
+BILLING_FIELD_MAP = {
+    "project_id": "Project ID",
+    "market": "Market",
+    "task_name": "Task Name",
+    "job_type": "Job Type",
+    "crq": "CRQ Number",
+    "work_performed": "Work Performed",
+    "billing_status": "Billing Status",
+    "office_notes": "Office Notes",
+    "zoho_invoice_id": "Zoho Invoice ID",
+    "invoice_number": "Invoice Number",
+    "invoice_date": "Invoice Date",
+    "invoice_amount": "Invoice Amount",
+    "payment_status": "Payment Status",
+    "payment_date": "Payment Date",
+    "payment_number": "Payment Number",
+    "amount_paid": "Amount Paid",
+    "balance": "Balance",
+    "billing_fingerprint": "Billing Fingerprint",
+    "billing_package_path": "Billing Package Path",
+    "created_at": "Created At",
+    "updated_at": "Updated At",
+}
+BILLING_REVERSE_FIELD_MAP = {value: key for key, value in BILLING_FIELD_MAP.items()}
+
+
+def normalize_billing(record: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {"row_id": record.get("row_id"), "id": record.get("row_id")}
+    for title, field in BILLING_REVERSE_FIELD_MAP.items():
+        value = record.get(title, "")
+        if field in {"invoice_amount", "amount_paid", "balance"}:
+            try:
+                value = float(value or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+        result[field] = value
+    return result
+
+
+def get_billing_record(project_id: str, *, force: bool = False) -> dict[str, Any] | None:
+    record = store.find_record(billing_sheet_id(), "Project ID", project_id, force=force)
+    return normalize_billing(record) if record else None
+
+
+def ensure_billing_record(job: dict[str, Any]) -> dict[str, Any]:
+    existing = get_billing_record(job["project_id"], force=True)
+    now = datetime.now().isoformat(timespec="seconds")
+    values = {
+        "Project ID": job["project_id"],
+        "Market": job.get("market", ""),
+        "Task Name": job.get("task_name", ""),
+        "Job Type": job.get("job_type", "Standard"),
+        "CRQ Number": job.get("crq", "") if job.get("job_type") == "Night Cut" else "",
+        "Work Performed": job.get("work_performed", ""),
+        "Billing Status": "Review",
+        "Payment Status": "Unpaid",
+        "Created At": now,
+        "Updated At": now,
+    }
+    if existing:
+        store.update_record(billing_sheet_id(), int(existing["row_id"]), {
+            "Market": values["Market"],
+            "Task Name": values["Task Name"],
+            "Job Type": values["Job Type"],
+            "CRQ Number": values["CRQ Number"],
+            "Work Performed": values["Work Performed"],
+            "Billing Status": "Review",
+            "Updated At": now,
+        })
+    else:
+        store.add_record(billing_sheet_id(), values)
+    return get_billing_record(job["project_id"], force=True)
+
+
 def log_activity(project_id: str, action: str, details: str = "") -> None:
     with db() as connection:
         connection.execute(
@@ -172,9 +250,7 @@ def job_values_from_form(form, *, include_identity: bool = False) -> dict[str, A
         "Due Date": form.get("due_date", ""), "Status": form.get("status", ""),
         "Assigned Technician": form.get("assigned_to", ""), "Priority": form.get("priority", "Normal"),
         "Work Performed": form.get("work_performed", ""), "Manager Notes": form.get("manager_notes", ""),
-        "Customer Notes": form.get("customer_notes", ""), "Billing Status": form.get("billing_status", "Not Ready"),
-        "Invoice Number": form.get("invoice_number", ""), "Invoice Date": form.get("invoice_date", ""),
-        "Invoice Amount": form.get("invoice_amount", ""), "Payment Status": form.get("payment_status", "Unpaid"),
+        "Customer Notes": form.get("customer_notes", ""),
     }
     if not include_identity:
         fields.pop("Market", None)
@@ -353,7 +429,7 @@ def job_detail(job_id: str):
 
         elif action == "start":
             if role == "Technician" and str(job.get("assigned_to", "")).lower() != str(session.get("user", "")).lower():
-                flash("This job is assigned to another technician.", "error")
+                flash("This work order is assigned to another technician.", "error")
                 return redirect(url_for("job_detail", job_id=job_id))
             updates = {"Status": "In Progress"}
             if not job.get("date_started"):
@@ -362,11 +438,7 @@ def job_detail(job_id: str):
 
         elif action == "save":
             if role == "Technician":
-                updates = {
-                    "Work Performed": request.form.get("work_performed", ""),
-                }
-                if request.form.get("status") in ["Assigned", "In Progress"]:
-                    updates["Status"] = request.form.get("status")
+                updates = {"Work Performed": request.form.get("work_performed", "")}
             else:
                 job_type = request.form.get("job_type", job.get("job_type") or "Standard")
                 if job_type == "Night Cut" and not request.form.get("crq", "").strip():
@@ -376,89 +448,45 @@ def job_detail(job_id: str):
                 assigned = request.form.get("assigned_to", "")
                 if assigned and assigned != job.get("assigned_to"):
                     updates["Date Assigned"] = date.today().isoformat()
-                    if request.form.get("status") in ["", "Unassigned", "New"]:
+                    if job.get("status") in ["", "New", "Unassigned"]:
                         updates["Status"] = "Assigned"
                 elif not assigned and job.get("assigned_to"):
                     updates["Status"] = "Unassigned"
-                log_activity(job_id, "Job Updated")
+                log_activity(job_id, "Work Order Updated")
 
         elif action == "complete":
             work = request.form.get("work_performed", job.get("work_performed", "")).strip()
             if not work:
-                flash("Enter the work performed before completing the field work.", "error")
+                flash("Enter the work performed before completing the work order.", "error")
                 return redirect(url_for("job_detail", job_id=job_id))
             updates = {
                 "Status": "Field Complete",
                 "Date Field Completed": date.today().isoformat(),
-                "Billing Status": "Review",
                 "Work Performed": work,
             }
-            log_activity(job_id, "Submitted for Office Review")
-
-        elif action == "approve_review":
-            if role not in ["Admin", "Manager", "Billing"]:
-                return "Forbidden", 403
-            updates = {"Status": "Ready to Bill", "Billing Status": "Ready to Bill"}
-            log_activity(job_id, "Office Review Approved")
-
-        elif action == "missing_documents":
-            if role not in ["Admin", "Manager", "Billing"]:
-                return "Forbidden", 403
-            updates = {"Status": "Missing Documents", "Billing Status": "Missing Documents"}
-            note = request.form.get("review_note", "").strip()
-            if note:
-                updates["Manager Notes"] = ((job.get("manager_notes") or "") + "\n" + "Missing documents: " + note).strip()
-            log_activity(job_id, "Returned for Missing Documents", note)
-
-        elif action == "mark_invoiced":
-            if role not in ["Admin", "Manager", "Billing"]:
-                return "Forbidden", 403
-            invoice_number = request.form.get("invoice_number", "").strip()
-            invoice_amount = request.form.get("invoice_amount", "").strip()
-            if not invoice_number or not invoice_amount:
-                flash("Invoice number and amount are required.", "error")
-                return redirect(url_for("job_detail", job_id=job_id))
-            updates = {
-                "Status": "Billed",
-                "Billing Status": "Invoiced",
-                "Invoice Number": invoice_number,
-                "Invoice Date": request.form.get("invoice_date") or date.today().isoformat(),
-                "Invoice Amount": invoice_amount,
-                "Payment Status": "Unpaid",
-                "Balance": invoice_amount,
-            }
-            log_activity(job_id, "Marked Invoiced", f"{invoice_number} · ${invoice_amount}")
-
-        elif action == "mark_paid":
-            if role not in ["Admin", "Manager", "Billing"]:
-                return "Forbidden", 403
-            amount = request.form.get("amount_paid", "").strip() or str(job.get("invoice_amount") or "")
-            updates = {
-                "Status": "Paid",
-                "Payment Status": "Paid",
-                "Payment Date": request.form.get("payment_date") or date.today().isoformat(),
-                "Payment Number": request.form.get("payment_number", "").strip(),
-                "Amount Paid": amount,
-                "Balance": 0,
-            }
-            log_activity(job_id, "Payment Applied", f"{request.form.get('payment_number','')} · ${amount}")
+            log_activity(job_id, "Work Order Submitted to Office")
 
         elif action == "close":
-            if role not in ["Admin", "Manager", "Billing"]:
+            if role not in ["Admin", "Manager"]:
                 return "Forbidden", 403
             updates = {"Status": "Closed", "Archived": True}
-            log_activity(job_id, "Job Closed")
+            log_activity(job_id, "Work Order Closed")
 
         if updates:
             store.update_record(master_sheet_id(), int(job["row_id"]), updates)
-            flash("Job updated.", "success")
+            job = get_job(job_id, force=True)
+            if action == "complete" and job:
+                ensure_billing_record(job)
+            flash("Work order updated.", "success")
         return redirect(url_for("job_detail", job_id=job_id))
 
     attachments = store.list_row_attachments(master_sheet_id(), int(job["row_id"]))
     with db() as connection:
         categories = {
             int(row["attachment_id"]): row
-            for row in connection.execute("SELECT * FROM file_categories WHERE project_id=?", (job_id,)).fetchall()
+            for row in connection.execute(
+                "SELECT * FROM file_categories WHERE project_id=? AND category='field'", (job_id,)
+            ).fetchall()
         }
         technicians = connection.execute(
             "SELECT email,display_name FROM users WHERE is_active=1 AND role='Technician' ORDER BY display_name"
@@ -471,23 +499,19 @@ def job_detail(job_id: str):
     for attachment in attachments:
         attachment_id = int(attachment["id"])
         category_row = categories.get(attachment_id)
-        category = category_row["category"] if category_row else "field"
+        if category_row and category_row["category"] != "field":
+            continue
         files.append({
             "id": attachment_id,
-            "attachment_id": attachment_id,
             "filename": attachment.get("name", "Attachment"),
-            "category": category,
             "uploaded_at": attachment.get("createdAt", ""),
         })
 
     return render_template(
         "job_detail.html",
         job=job,
-        files=visible_files_for_role(files),
-        statuses=STATUSES,
+        files=files,
         priorities=PRIORITIES,
-        billing_statuses=BILLING_STATUSES,
-        payment_statuses=PAYMENT_STATUSES,
         technicians=technicians,
         activity=activity,
     )
@@ -496,12 +520,9 @@ def job_detail(job_id: str):
 @app.route("/jobs/<job_id>/upload", methods=["POST"])
 @require_login
 def upload(job_id: str):
-    category = request.form.get("category", "field")
-    if category == "billing" and session.get("role") == "Technician":
-        return "Forbidden", 403
     uploaded = request.files.get("file")
     if not uploaded or not uploaded.filename:
-        flash("Choose a file.", "error")
+        flash("Choose a field file.", "error")
         return redirect(url_for("job_detail", job_id=job_id))
     job = get_job(job_id, force=True)
     if not job:
@@ -516,11 +537,11 @@ def upload(job_id: str):
         attachment_id = int(attachment["id"])
         with db() as connection:
             connection.execute(
-                "INSERT OR REPLACE INTO file_categories(attachment_id,project_id,category,original_filename,uploaded_by,uploaded_at) VALUES(?,?,?,?,?,?)",
-                (attachment_id, job_id, category, filename, session["user"], datetime.now().isoformat(timespec="seconds")),
+                "INSERT OR REPLACE INTO file_categories(attachment_id,project_id,category,sheet_id,original_filename,uploaded_by,uploaded_at) VALUES(?,?,?,?,?,?,?)",
+                (attachment_id, job_id, "field", str(master_sheet_id()), filename, session["user"], datetime.now().isoformat(timespec="seconds")),
             )
             connection.commit()
-        log_activity(job_id, "File Uploaded", f"{category}: {filename}")
+        log_activity(job_id, "Field File Uploaded", filename)
         flash(f"Uploaded {filename}.", "success")
     finally:
         temp_path.unlink(missing_ok=True)
@@ -530,10 +551,6 @@ def upload(job_id: str):
 @app.route("/files/<int:file_id>")
 @require_login
 def download_file(file_id: int):
-    with db() as connection:
-        category = connection.execute("SELECT * FROM file_categories WHERE attachment_id=?", (file_id,)).fetchone()
-    if category and category["category"] == "billing" and session.get("role") == "Technician":
-        return "Forbidden", 403
     info = store.attachment_download_info(master_sheet_id(), file_id)
     url = info.get("url")
     if not url:
@@ -547,27 +564,156 @@ def download_file(file_id: int):
     return send_file(temp.name, as_attachment=True, download_name=info.get("name", "attachment"))
 
 
-@app.route("/jobs/<job_id>/billing-package")
+@app.route("/billing")
+@require_login
+@manager_required
+def billing_queue():
+    records = [normalize_billing(record) for record in store.list_records(billing_sheet_id(), force=True)]
+    status_filter = request.args.get("status", "")
+    if status_filter:
+        records = [record for record in records if record.get("billing_status") == status_filter]
+    records.sort(key=lambda item: (item.get("billing_status", ""), item.get("project_id", "")))
+    return render_template("billing_queue.html", records=records, billing_statuses=BILLING_STATUSES)
+
+
+@app.route("/billing/<job_id>", methods=["GET", "POST"])
+@require_login
+@manager_required
+def billing_detail(job_id: str):
+    job = get_job(job_id, force=True)
+    if not job:
+        return "Not found", 404
+    billing = get_billing_record(job_id, force=True) or ensure_billing_record(job)
+
+    if request.method == "POST":
+        action = request.form.get("action", "")
+        updates: dict[str, Any] = {"Updated At": datetime.now().isoformat(timespec="seconds")}
+
+        if action == "save":
+            updates.update({
+                "Office Notes": request.form.get("office_notes", ""),
+                "Billing Status": request.form.get("billing_status", billing.get("billing_status") or "Review"),
+            })
+            log_activity(job_id, "Billing Record Updated")
+
+        elif action == "approve":
+            updates["Billing Status"] = "Ready to Bill"
+            log_activity(job_id, "Office Review Approved")
+
+        elif action == "missing_documents":
+            note = request.form.get("office_notes", "").strip()
+            updates.update({"Billing Status": "Missing Documents", "Office Notes": note})
+            store.update_record(master_sheet_id(), int(job["row_id"]), {
+                "Status": "Missing Documents",
+                "Manager Notes": ((job.get("manager_notes") or "") + "\nMissing documents: " + note).strip(),
+            })
+            log_activity(job_id, "Returned for Missing Documents", note)
+
+        elif action == "mark_invoiced":
+            invoice_number = request.form.get("invoice_number", "").strip()
+            invoice_amount = request.form.get("invoice_amount", "").strip()
+            if not invoice_number or not invoice_amount:
+                flash("Invoice number and amount are required.", "error")
+                return redirect(url_for("billing_detail", job_id=job_id))
+            updates.update({
+                "Billing Status": "Invoiced",
+                "Invoice Number": invoice_number,
+                "Invoice Date": request.form.get("invoice_date") or date.today().isoformat(),
+                "Invoice Amount": invoice_amount,
+                "Payment Status": "Unpaid",
+                "Balance": invoice_amount,
+            })
+            log_activity(job_id, "Marked Invoiced", f"{invoice_number} · ${invoice_amount}")
+
+        elif action == "mark_paid":
+            amount = request.form.get("amount_paid", "").strip() or str(billing.get("invoice_amount") or "")
+            updates.update({
+                "Payment Status": "Paid",
+                "Payment Date": request.form.get("payment_date") or date.today().isoformat(),
+                "Payment Number": request.form.get("payment_number", "").strip(),
+                "Amount Paid": amount,
+                "Balance": 0,
+            })
+            log_activity(job_id, "Payment Applied", f"{request.form.get('payment_number','')} · ${amount}")
+
+        store.update_record(billing_sheet_id(), int(billing["row_id"]), updates)
+        flash("Billing record updated.", "success")
+        return redirect(url_for("billing_detail", job_id=job_id))
+
+    attachments = store.list_row_attachments(billing_sheet_id(), int(billing["row_id"]))
+    files = [{
+        "id": int(item["id"]),
+        "filename": item.get("name", "Attachment"),
+        "uploaded_at": item.get("createdAt", ""),
+    } for item in attachments]
+    return render_template("billing_detail.html", job=job, billing=billing, files=files, billing_statuses=BILLING_STATUSES)
+
+
+@app.route("/billing/<job_id>/upload", methods=["POST"])
+@require_login
+@manager_required
+def billing_upload(job_id: str):
+    job = get_job(job_id, force=True)
+    if not job:
+        return "Not found", 404
+    billing = get_billing_record(job_id, force=True) or ensure_billing_record(job)
+    uploaded = request.files.get("file")
+    if not uploaded or not uploaded.filename:
+        flash("Choose a billing file.", "error")
+        return redirect(url_for("billing_detail", job_id=job_id))
+    filename = secure_filename(uploaded.filename) or "attachment"
+    temp_folder = FILE_PATH / "temp"
+    temp_folder.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_folder / f"{datetime.now().strftime('%Y%m%d%H%M%S%f')}-{filename}"
+    uploaded.save(temp_path)
+    try:
+        attachment = store.add_attachment(billing_sheet_id(), int(billing["row_id"]), temp_path, filename)
+        attachment_id = int(attachment["id"])
+        with db() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO file_categories(attachment_id,project_id,category,sheet_id,original_filename,uploaded_by,uploaded_at) VALUES(?,?,?,?,?,?,?)",
+                (attachment_id, job_id, "billing", str(billing_sheet_id()), filename, session["user"], datetime.now().isoformat(timespec="seconds")),
+            )
+            connection.commit()
+        log_activity(job_id, "Billing File Uploaded", filename)
+        flash(f"Uploaded {filename}.", "success")
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return redirect(url_for("billing_detail", job_id=job_id))
+
+
+@app.route("/billing/files/<int:file_id>")
+@require_login
+@manager_required
+def billing_download_file(file_id: int):
+    info = store.attachment_download_info(billing_sheet_id(), file_id)
+    url = info.get("url")
+    if not url:
+        return "Attachment download unavailable", 404
+    response = requests.get(url, timeout=120)
+    response.raise_for_status()
+    suffix = Path(info.get("name", "attachment")).suffix
+    temp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp.write(response.content)
+    temp.close()
+    return send_file(temp.name, as_attachment=True, download_name=info.get("name", "attachment"))
+
+
+@app.route("/billing/<job_id>/package")
 @require_login
 @manager_required
 def billing_package(job_id: str):
     job = get_job(job_id, force=True)
-    if not job:
+    billing = get_billing_record(job_id, force=True)
+    if not job or not billing:
         return "Not found", 404
-    attachments = store.list_row_attachments(master_sheet_id(), int(job["row_id"]))
-    with db() as connection:
-        billing_ids = {
-            int(row["attachment_id"])
-            for row in connection.execute(
-                "SELECT attachment_id FROM file_categories WHERE project_id=? AND category='billing'", (job_id,)
-            ).fetchall()
-        }
+    if billing.get("billing_status") not in ["Ready to Bill", "Invoiced", "Sent"]:
+        flash("Approve office review before generating the billing package.", "error")
+        return redirect(url_for("billing_detail", job_id=job_id))
+    attachments = store.list_row_attachments(billing_sheet_id(), int(billing["row_id"]))
     output_folder = FILE_PATH / job_id
     output_folder.mkdir(parents=True, exist_ok=True)
     output = output_folder / f"{job_id}-Billing-Package.zip"
-    if job.get("billing_status") not in ["Ready to Bill", "Invoiced", "Sent"]:
-        flash("Approve office review before generating the billing package.", "error")
-        return redirect(url_for("job_detail", job_id=job_id))
     manifest = {
         "project_id": job_id,
         "market": job.get("market"),
@@ -578,22 +724,18 @@ def billing_package(job_id: str):
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "generated_by": session.get("user"),
     }
-    included = 0
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("billing-manifest.json", json.dumps(manifest, indent=2))
         for attachment in attachments:
             attachment_id = int(attachment["id"])
-            if attachment_id not in billing_ids:
-                continue
-            info = store.attachment_download_info(master_sheet_id(), attachment_id)
+            info = store.attachment_download_info(billing_sheet_id(), attachment_id)
             if not info.get("url"):
                 continue
             response = requests.get(info["url"], timeout=120)
             response.raise_for_status()
             archive.writestr(info.get("name", f"attachment-{attachment_id}"), response.content)
-            included += 1
-    store.update_record(master_sheet_id(), int(job["row_id"]), {"Billing Package Path": output.name})
-    log_activity(job_id, "Billing Package Generated", f"{included} billing file(s)")
+    store.update_record(billing_sheet_id(), int(billing["row_id"]), {"Billing Package Path": output.name})
+    log_activity(job_id, "Billing Package Generated")
     return send_file(output, as_attachment=True, download_name=output.name)
 
 

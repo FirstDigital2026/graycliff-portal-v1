@@ -65,3 +65,25 @@ SHEET_DEFINITIONS = {
         ("Description", "TEXT_NUMBER", False),
     ],
 }
+
+
+JOB_BILLING_SHEET = "Graycliff Job Billing"
+JOB_BILLING_COLUMNS = [
+    ("Project ID", "TEXT_NUMBER", True),
+    ("Market", "PICKLIST", False),
+    ("Task Name", "TEXT_NUMBER", False),
+    ("Job Type", "PICKLIST", False),
+    ("CRQ Number", "TEXT_NUMBER", False),
+    ("Work Performed", "TEXT_NUMBER", False),
+    ("Billing Status", "PICKLIST", False),
+    ("Office Notes", "TEXT_NUMBER", False),
+    ("Invoice Number", "TEXT_NUMBER", False),
+    ("Invoice Date", "DATE", False),
+    ("Invoice Amount", "TEXT_NUMBER", False),
+    ("Payment Status", "PICKLIST", False),
+    ("Payment Date", "DATE", False),
+    ("Payment Number", "TEXT_NUMBER", False),
+    ("Amount Paid", "TEXT_NUMBER", False),
+    ("Balance", "TEXT_NUMBER", False),
+    ("Billing Package Path", "TEXT_NUMBER", False),
+]
