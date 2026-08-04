@@ -1,0 +1,73 @@
+# Graycliff Cloud Portal v1
+
+This is a clean rebuild designed around the final architecture:
+
+- **Smartsheet:** field operations for technicians
+- **First Digital portal:** office review and billing
+- **Graycliff portal:** read-only customer project/invoice view
+- **Cloud sync:** active technician directory -> Assigned Technician contact options
+- **No technician traffic through the website**
+- **No PC-based process**
+
+## Smartsheet IDs already configured
+
+- Workspace: `3074739741714308`
+- Graycliff Field Work Orders: `1440710464065412`
+- Graycliff Technician Directory: `7015354675974020`
+- Graycliff Billing: `7158170928500612`
+- Graycliff Payments: `6526836505792388`
+- Graycliff Payment Matches: `435877095362436`
+
+## Deploy to Render
+
+1. Create a new empty GitHub repository.
+2. Upload the **contents of this folder** to the repository root.
+3. In Render, choose **New > Blueprint** and connect the repository.
+4. Set these secret environment variables:
+   - `ADMIN_PASSWORD`
+   - `SMARTSHEET_ACCESS_TOKEN`
+5. Deploy.
+6. Log in using `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
+7. Open **Users** and create:
+   - First Digital office users
+   - Graycliff customer users
+8. Press **Sync Now** once.
+
+## Automatic sync
+
+The Render service runs two cloud jobs every 15 minutes:
+
+1. Synchronize active Technician Directory contacts into the Assigned Technician contact column.
+2. Create missing billing-queue rows for field-complete/approved work orders.
+
+Set `TECH_SYNC_MINUTES` to a different value if needed. Five minutes is the minimum recommended value.
+
+## What works in v1
+
+- Cloud-only technician contact sync
+- Cached Smartsheet reads
+- First Digital office dashboard
+- Work-order review
+- Missing-documents / office-approval workflow
+- Automatic billing-queue creation
+- Billing record editing
+- Smartsheet row attachment downloads
+- Graycliff read-only job view
+- Graycliff invoice/payment summary
+- Portal user management
+- Persistent SQLite database on Render disk
+- First Digital branding
+
+## Deliberately not included yet
+
+These require the exact production rules and credentials before they should be automated:
+
+- Zoho invoice creation
+- Rate-card line-item calculations
+- Work Completed Spreadsheet generation
+- Billing-package ZIP generation
+- Remittance PDF/email parsing
+- Daily Number payment matching
+- Automatic attachment classification into Field File vs Required Photos
+
+The structure is ready for those integrations without changing the technician workflow.

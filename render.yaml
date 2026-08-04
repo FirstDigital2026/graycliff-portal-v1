@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: graycliff-portal
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn --workers 1 --threads 8 --timeout 120 app:app
+    healthCheckPath: /healthz
+    disk:
+      name: graycliff-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.13.5
+      - key: DATA_PATH
+        value: /var/data/graycliff.db
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+      - key: ADMIN_EMAIL
+        value: thomas@firstdigitalsc.com
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SMARTSHEET_ACCESS_TOKEN
+        sync: false
+      - key: ENABLE_BACKGROUND_SYNC
+        value: "true"
+      - key: TECH_SYNC_MINUTES
+        value: "15"

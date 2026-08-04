@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">FIRST DIGITAL OFFICE</span><h1>Graycliff Operations</h1></div>
+</div>
+<div class="metric-grid">
+  <a class="metric" href="{{url_for('office_work_orders')}}"><strong>{{metrics.open}}</strong><span>Open Work Orders</span></a>
+  <a class="metric" href="{{url_for('office_work_orders',status='Field Complete')}}"><strong>{{metrics.field_complete}}</strong><span>Field Complete</span></a>
+  <a class="metric" href="{{url_for('office_work_orders',status='Missing Documents')}}"><strong>{{metrics.missing}}</strong><span>Missing Documents</span></a>
+  <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.ready_to_bill}}</strong><span>Ready to Bill</span></a>
+  <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
+</div>
+<section class="panel">
+  <h2>System design</h2>
+  <p>Technicians continue working in Smartsheet. This portal handles First Digital office review, billing, and Graycliff’s read-only customer view.</p>
+</section>
+{% endblock %}

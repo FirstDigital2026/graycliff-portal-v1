@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">ADMINISTRATION</span><h1>Portal Users</h1></div></div>
+<div class="two-col">
+<section class="panel">
+  <h2>Create user</h2>
+  <form method="post" class="stack">
+    <label>Name<input name="display_name" required></label>
+    <label>Email<input type="email" name="email" required></label>
+    <label>Role<select name="role"><option value="graycliff">Graycliff Customer</option><option value="office">First Digital Office</option><option value="admin">Administrator</option></select></label>
+    <label>Temporary Password<input type="password" name="password" required></label>
+    <button class="primary">Create User</button>
+  </form>
+</section>
+<section class="panel">
+  <h2>Existing users</h2>
+  {% for user in users %}<div class="user-row"><div><strong>{{user.display_name}}</strong><br><small>{{user.email}}</small></div><span class="status">{{user.role}}</span></div>{% endfor %}
+</section>
+</div>
+{% endblock %}

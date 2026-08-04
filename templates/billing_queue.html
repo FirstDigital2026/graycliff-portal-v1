@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">FIRST DIGITAL</span><h1>Billing Queue</h1></div></div>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Project</th><th>Market</th><th>Task</th><th>Job Type</th><th>Billing Status</th><th>Invoice</th><th>Amount</th><th>Payment</th></tr></thead>
+<tbody>
+{% for row in billing_rows %}
+<tr>
+  <td><a href="{{url_for('billing_detail',project_id=row.get('Project ID'))}}">{{row.get('Project ID')}}</a></td>
+  <td>{{row.get('Market','')}}</td><td>{{row.get('Task Name','')}}</td><td>{{row.get('Job Type','')}}</td>
+  <td><span class="status">{{row.get('Billing Status','')}}</span></td>
+  <td>{{row.get('Invoice Number','')}}</td><td>{{row.get('Invoice Amount','')}}</td><td>{{row.get('Payment Status','')}}</td>
+</tr>
+{% else %}<tr><td colspan="8" class="empty">No billing records.</td></tr>{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}
