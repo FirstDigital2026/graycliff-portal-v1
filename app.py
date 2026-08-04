@@ -204,6 +204,15 @@ def healthz():
 @app.route("/dashboard")
 @require_login
 def dashboard():
+    setup_status = store.status()
+    if not setup_status.get("connected"):
+        return render_template(
+            "dashboard.html",
+            counts={},
+            recent=[],
+            exceptions=0,
+            setup_status=setup_status,
+        )
     try:
         jobs = [normalize_job(record) for record in store.list_records(master_sheet_id())]
         jobs = [job for job in jobs if not job.get("archived") and user_can_view_market(job)]
@@ -213,10 +222,17 @@ def dashboard():
         recent = list(reversed(jobs[-8:]))
         with db() as connection:
             exceptions = connection.execute("SELECT COUNT(*) n FROM payment_matches WHERE status='Pending'").fetchone()["n"]
-        setup_status = store.status()
         return render_template("dashboard.html", counts=counts, recent=recent, exceptions=exceptions, setup_status=setup_status)
     except Exception as exc:
         return render_template("setup_error.html", error=str(exc), setup_status=store.status()), 503
+
+
+@app.route("/admin/smartsheet-status")
+@require_login
+@admin_required
+def smartsheet_status():
+    status = store.status()
+    return status, (200 if status.get("connected") else 503)
 
 
 @app.route("/admin/setup-smartsheet", methods=["POST"])
