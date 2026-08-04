@@ -43,22 +43,16 @@ COLUMBIA_MOBILE_SHEET = "Columbia Technician Jobs"
 
 MOBILE_COLUMNS = [
     ("Project ID", "TEXT_NUMBER", True),
-    ("Priority", "PICKLIST", False),
-    ("Task Name", "TEXT_NUMBER", False),
-    ("Address", "TEXT_NUMBER", False),
-    ("City", "TEXT_NUMBER", False),
-    ("Job Type", "PICKLIST", False),
-    ("CRQ Number", "TEXT_NUMBER", False),
-    ("Due Date", "DATE", False),
+    ("Job Summary", "TEXT_NUMBER", False),
+    ("Location", "TEXT_NUMBER", False),
+    ("Due / Priority", "TEXT_NUMBER", False),
     ("Assigned Technician", "CONTACT_LIST", False),
     ("Status", "PICKLIST", False),
-    ("Date Started", "DATE", False),
-    ("Date Field Completed", "DATE", False),
     ("Work Performed", "TEXT_NUMBER", False),
     ("Field File Complete", "CHECKBOX", False),
     ("Required Photos Complete", "CHECKBOX", False),
-    ("Manager Notes", "TEXT_NUMBER", False),
-    ("Customer Notes", "TEXT_NUMBER", False),
+    ("Date Field Completed", "DATE", False),
+    ("Date Started", "DATE", False),
     ("Master Row ID", "TEXT_NUMBER", False),
 ]
 
@@ -337,6 +331,53 @@ def find_sheet_by_name(name: str) -> dict[str, Any] | None:
     return None
 
 
+
+def build_job_summary(row: dict[str, Any]) -> str:
+    job_type = str(row.get("Job Type", "")).strip()
+    task_name = str(row.get("Task Name", "")).strip()
+    crq = str(row.get("CRQ Number", "")).strip()
+
+    first_line = " - ".join(part for part in (job_type, task_name) if part)
+    lines = [first_line] if first_line else []
+    if crq:
+        lines.append(f"CRQ: {crq}")
+    return "\n".join(lines)
+
+
+def build_location(row: dict[str, Any]) -> str:
+    address = str(row.get("Address", "")).strip()
+    city = str(row.get("City", "")).strip()
+    return "\n".join(part for part in (address, city) if part)
+
+
+def build_due_priority(row: dict[str, Any]) -> str:
+    due = str(row.get("Due Date", "")).strip()
+    priority = str(row.get("Priority", "")).strip()
+    lines = []
+    if due:
+        lines.append(f"Due: {due}")
+    if priority:
+        lines.append(f"Priority: {priority}")
+    return "\n".join(lines)
+
+
+def ensure_mobile_summary_columns(sheet_id: int) -> None:
+    sheet = store.get_sheet(sheet_id, force=True)
+    existing = {c["title"] for c in sheet.get("columns", [])}
+    needed = []
+    for title in ("Job Summary", "Location", "Due / Priority"):
+        if title not in existing:
+            needed.append(
+                {
+                    "title": title,
+                    "type": "TEXT_NUMBER",
+                    "index": 1 + len(needed),
+                }
+            )
+    if needed:
+        store.add_columns(sheet_id, needed)
+
+
 def mobile_sheet_definition(name: str) -> dict[str, Any]:
     source = store.get_sheet(FIELD_SHEET_ID, force=True)
     source_columns = {c["title"]: c for c in source.get("columns", [])}
@@ -367,6 +408,7 @@ def ensure_mobile_field_sheets() -> dict[str, Any]:
         sheet = find_sheet_by_name(name)
         if sheet and sheet.get("id"):
             sheet_id = int(sheet["id"])
+            ensure_mobile_summary_columns(sheet_id)
             existing.append({"name": name, "id": sheet_id})
             sheet_ids[name] = sheet_id
             continue
@@ -477,8 +519,14 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             continue
 
         if not mobile:
-            values = {"Project ID": project_id, "Master Row ID": str(master["_row_id"])}
-            for field in MANAGER_TO_MOBILE_FIELDS + TECH_TO_MASTER_FIELDS:
+            values = {
+                "Project ID": project_id,
+                "Job Summary": build_job_summary(master),
+                "Location": build_location(master),
+                "Due / Priority": build_due_priority(master),
+                "Master Row ID": str(master["_row_id"]),
+            }
+            for field in ("Assigned Technician",) + tuple(TECH_TO_MASTER_FIELDS):
                 values[field] = master.get(field, "")
             new_row = store.add_row(target_id, values)
             mobile_row_id = int(new_row.get("id"))
@@ -491,12 +539,20 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             )
             continue
 
-        # Manager-controlled values always flow from master -> mobile.
-        mobile_updates = {"Master Row ID": str(master["_row_id"])}
-        for field in MANAGER_TO_MOBILE_FIELDS:
-            if mobile.get(field, "") != master.get(field, ""):
-                mobile_updates[field] = master.get(field, "")
-        if len(mobile_updates) > 1 or str(mobile.get("Master Row ID", "")) != str(master["_row_id"]):
+        # Mobile display fields and assignment always flow from master -> mobile.
+        desired_mobile = {
+            "Master Row ID": str(master["_row_id"]),
+            "Job Summary": build_job_summary(master),
+            "Location": build_location(master),
+            "Due / Priority": build_due_priority(master),
+            "Assigned Technician": master.get("Assigned Technician", ""),
+        }
+        mobile_updates = {
+            field: value
+            for field, value in desired_mobile.items()
+            if mobile.get(field, "") != value
+        }
+        if mobile_updates:
             store.update_row(target_id, int(mobile["_row_id"]), mobile_updates)
             stats["updated_mobile_rows"] += 1
 

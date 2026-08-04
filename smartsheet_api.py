@@ -132,6 +132,11 @@ class SmartsheetClient:
         result = self._request("POST", f"/workspaces/{workspace_id}/sheets", body=body)
         return result.get("result", result)
 
+    def add_columns(self, sheet_id: int, columns: list[dict[str, Any]]) -> Any:
+        result = self._request("POST", f"/sheets/{sheet_id}/columns", body=columns)
+        self.invalidate(f"sheet:{sheet_id}")
+        return result
+
     def delete_row(self, sheet_id: int, row_id: int) -> Any:
         result = self._request(
             "DELETE",

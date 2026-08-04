@@ -108,3 +108,26 @@ Cloud sync behavior:
 - Closed or archived jobs are removed from technician sheets.
 - Jobs moved between markets are moved to the correct market sheet.
 - Sync runs on the same cloud interval as the technician-directory sync.
+
+
+## Mobile card layout
+
+The sync now adds and maintains three combined display fields:
+
+- Job Summary: Job Type, Task Name, and CRQ when present
+- Location: Address and City
+- Due / Priority: Due Date and Priority
+
+Recommended Mobile View fields:
+
+1. Job Summary
+2. Location
+3. Due / Priority
+4. Assigned Technician
+5. Status
+6. Work Performed
+7. Field File Complete
+8. Required Photos Complete
+9. Date Field Completed
+
+Project ID remains the card title. Comments and attachments remain available from the card icons.
