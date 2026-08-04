@@ -1,0 +1,7 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-head"><div><span class="eyebrow">OFFICE ONLY</span><h1>Billing Queue</h1><p>Separate billing records created after field work is submitted.</p></div></div>
+<form class="filters panel" method="get"><label>Status<select name="status"><option value="">All</option>{% for status in billing_statuses %}<option {% if request.args.get('status')==status %}selected{% endif %}>{{status}}</option>{% endfor %}</select></label><button>Filter</button></form>
+<div class="panel table"><table><tr><th>Project</th><th>Market</th><th>Task</th><th>Billing Status</th><th>Invoice</th><th>Payment</th></tr>
+{% for item in records %}<tr><td><a href="/billing/{{item.project_id}}">{{item.project_id}}</a></td><td>{{item.market}}</td><td>{{item.task_name}}</td><td><span class="pill">{{item.billing_status}}</span></td><td>{{item.invoice_number or '—'}}</td><td>{{item.payment_status or 'Unpaid'}}</td></tr>{% else %}<tr><td colspan="6" class="empty">No work orders are in billing yet.</td></tr>{% endfor %}
+</table></div>
+{% endblock %}
