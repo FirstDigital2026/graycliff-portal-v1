@@ -124,22 +124,38 @@ def init_db() -> None:
                     datetime.now().isoformat(timespec="seconds"),
                 ),
             )
-        elif existing and admin_password:
-            # Ensure the retained admin account from an older build can sign in.
-            connection.execute(
-                """
-                UPDATE users
-                SET display_name=?, password_hash=?, role='admin', active=1,
-                    created_at=CASE WHEN created_at='' THEN ? ELSE created_at END
-                WHERE email=?
-                """,
-                (
-                    "Thomas Bramlette II",
-                    generate_password_hash(admin_password),
-                    datetime.now().isoformat(timespec="seconds"),
-                    admin_email,
-                ),
-            )
+        elif existing:
+            # Always promote the configured ADMIN_EMAIL to administrator.
+            # Preserve the existing password unless ADMIN_PASSWORD is supplied.
+            if admin_password:
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET display_name=?, password_hash=?, role='admin', active=1,
+                        created_at=CASE WHEN created_at='' THEN ? ELSE created_at END
+                    WHERE email=?
+                    """,
+                    (
+                        "Thomas Bramlette II",
+                        generate_password_hash(admin_password),
+                        datetime.now().isoformat(timespec="seconds"),
+                        admin_email,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE users
+                    SET display_name=?, role='admin', active=1,
+                        created_at=CASE WHEN created_at='' THEN ? ELSE created_at END
+                    WHERE email=?
+                    """,
+                    (
+                        "Thomas Bramlette II",
+                        datetime.now().isoformat(timespec="seconds"),
+                        admin_email,
+                    ),
+                )
 
 
 def log_action(action: str, object_type: str = "", object_id: str = "", details: str = "") -> None:
