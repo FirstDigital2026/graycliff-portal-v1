@@ -71,3 +71,17 @@ These require the exact production rules and credentials before they should be a
 - Automatic attachment classification into Field File vs Required Photos
 
 The structure is ready for those integrations without changing the technician workflow.
+
+
+## Smartsheet technician views
+
+After deployment, log in as the administrator and press:
+
+`Build Florence & Columbia Views`
+
+This creates two reports in the Graycliff Portal workspace:
+
+- Florence Field Work
+- Columbia Field Work
+
+They are sourced from the single Graycliff Field Work Orders master sheet. Technicians can use the reports from Smartsheet mobile after the reports and source sheet are shared with the appropriate people.

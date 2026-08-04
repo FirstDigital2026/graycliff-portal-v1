@@ -257,6 +257,115 @@ def sync_technician_contacts() -> dict[str, Any]:
         sync_lock.release()
 
 
+
+def build_field_reports() -> dict[str, Any]:
+    """Create the Florence and Columbia technician reports in the Graycliff workspace."""
+    sheet = store.get_sheet(FIELD_SHEET_ID, force=True)
+    column_by_title = {c["title"]: c for c in sheet.get("columns", [])}
+
+    visible_titles = [
+        "Project ID",
+        "Priority",
+        "Task Name",
+        "Address",
+        "City",
+        "Job Type",
+        "CRQ Number",
+        "Due Date",
+        "Assigned Technician",
+        "Status",
+        "Date Started",
+        "Date Field Completed",
+        "Work Performed",
+        "Field File Complete",
+        "Required Photos Complete",
+        "Manager Notes",
+        "Customer Notes",
+    ]
+
+    missing = [title for title in visible_titles if title not in column_by_title]
+    if missing:
+        return {"ok": False, "message": "Missing report columns: " + ", ".join(missing)}
+
+    market_column = column_by_title["Market"]
+    status_column = column_by_title["Status"]
+
+    columns = []
+    for index, title in enumerate(visible_titles):
+        source = column_by_title[title]
+        item = {
+            "index": index,
+            "title": title,
+            "type": source["type"],
+            "width": 150,
+        }
+        if title == "Project ID":
+            item["primary"] = True
+        columns.append(item)
+
+    existing = {r.get("name"): r for r in store.list_reports()}
+    created = []
+    skipped = []
+
+    for market in ("Florence", "Columbia"):
+        name = f"{market} Field Work"
+        if name in existing:
+            skipped.append(name)
+            continue
+
+        body = {
+            "name": name,
+            "destination": {
+                "destinationType": "workspace",
+                "destinationId": WORKSPACE_ID,
+            },
+            "scope": [
+                {
+                    "assetType": "sheet",
+                    "assetId": FIELD_SHEET_ID,
+                }
+            ],
+            "columns": columns,
+            "isSummaryReport": False,
+            "reportDefinition": {
+                "filters": {
+                    "operator": "AND",
+                    "criteria": [
+                        {
+                            "columnId": market_column["id"],
+                            "operator": "EQUAL",
+                            "values": [market],
+                        },
+                        {
+                            "columnId": status_column["id"],
+                            "operator": "NOT_EQUAL",
+                            "values": ["Closed"],
+                        },
+                    ],
+                },
+                "sortingCriteria": [
+                    {
+                        "column": {"title": "Priority", "type": column_by_title["Priority"]["type"]},
+                        "sortingDirection": "DESCENDING",
+                    },
+                    {
+                        "column": {"title": "Due Date", "type": column_by_title["Due Date"]["type"]},
+                        "sortingDirection": "ASCENDING",
+                    },
+                ],
+            },
+        }
+        result = store.create_report(body)
+        created.append({"name": name, "id": result.get("id"), "permalink": result.get("permalink")})
+
+    return {
+        "ok": True,
+        "message": f"Created {len(created)} report(s); {len(skipped)} already existed.",
+        "created": created,
+        "skipped": skipped,
+    }
+
+
 def sync_billing_queue() -> dict[str, Any]:
     field_rows = record_map(FIELD_SHEET_ID, force=True)
     billing_rows = record_map(BILLING_SHEET_ID, force=True)
@@ -556,6 +665,19 @@ def users():
             "SELECT id,email,display_name,role,active,created_at FROM users ORDER BY role,display_name"
         ).fetchall()
     return render_template("users.html", users=all_users)
+
+
+
+@app.route("/admin/build-field-views", methods=["POST"])
+@roles("admin")
+def admin_build_field_views():
+    result = build_field_reports()
+    if result.get("ok"):
+        flash(result.get("message", "Field reports created."), "success")
+        log_action("Build Field Reports", "workspace", str(WORKSPACE_ID), str(result))
+    else:
+        flash(result.get("message", "Unable to create field reports."), "error")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/admin/sync", methods=["POST"])

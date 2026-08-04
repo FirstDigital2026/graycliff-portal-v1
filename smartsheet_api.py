@@ -116,6 +116,14 @@ class SmartsheetClient:
     def get_column(self, sheet_id: int, column_id: int) -> dict[str, Any]:
         return self._request("GET", f"/sheets/{sheet_id}/columns/{column_id}")
 
+    def list_reports(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/reports", query={"pageSize": 100})
+        return payload.get("data", [])
+
+    def create_report(self, body: dict[str, Any]) -> dict[str, Any]:
+        result = self._request("POST", "/reports", body=body)
+        return result.get("result", result)
+
     def update_column(self, sheet_id: int, column_id: int, body: dict[str, Any]) -> Any:
         result = self._request("PUT", f"/sheets/{sheet_id}/columns/{column_id}", body=body)
         self.invalidate(f"sheet:{sheet_id}")

@@ -11,7 +11,10 @@
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
 </div>
 <section class="panel">
-  <h2>System design</h2>
-  <p>Technicians continue working in Smartsheet. This portal handles First Digital office review, billing, and Graycliff’s read-only customer view.</p>
+  <h2>Smartsheet field views</h2>
+  <p>Technicians continue working in Smartsheet mobile. Create the Florence and Columbia editable field reports from the master work-order sheet.</p>
+  <form method="post" action="{{url_for('admin_build_field_views')}}">
+    <button class="primary">Build Florence &amp; Columbia Views</button>
+  </form>
 </section>
 {% endblock %}
