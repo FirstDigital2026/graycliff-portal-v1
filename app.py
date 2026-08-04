@@ -29,7 +29,7 @@ app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ChangeMeNow!")
 
 FIELD_MAP = {
-    "project_id": "Project ID", "market": "Market", "task_name": "Task Name", "address": "Address",
+    "project_id": "Project ID", "market": "Market", "job_type": "Job Type", "task_name": "Task Name", "address": "Address",
     "city": "City", "crq": "CRQ Number", "daily_no": "Daily No", "due_date": "Due Date",
     "status": "Status", "assigned_to": "Assigned Technician", "priority": "Priority",
     "date_received": "Date Received", "date_assigned": "Date Assigned", "date_started": "Date Started",
@@ -142,9 +142,9 @@ def normalize_job(record: dict[str, Any]) -> dict[str, Any]:
 
 def job_values_from_form(form, *, include_identity: bool = False) -> dict[str, Any]:
     fields = {
-        "Market": form.get("market", ""), "Task Name": form.get("task_name", ""),
+        "Market": form.get("market", ""), "Job Type": form.get("job_type", "Standard"), "Task Name": form.get("task_name", ""),
         "Address": form.get("address", ""), "City": form.get("city", ""),
-        "CRQ Number": form.get("crq", ""), "Daily No": form.get("daily_no", ""),
+        "CRQ Number": form.get("crq", "") if form.get("job_type", "Standard") == "Night Cut" else "",
         "Due Date": form.get("due_date", ""), "Status": form.get("status", ""),
         "Assigned Technician": form.get("assigned_to", ""), "Priority": form.get("priority", "Normal"),
         "Work Performed": form.get("work_performed", ""), "Manager Notes": form.get("manager_notes", ""),
@@ -285,6 +285,10 @@ def new_job():
     if request.method == "POST":
         market = request.form["market"]
         project_id = store.next_project_id(market)
+        job_type = request.form.get("job_type", "Standard")
+        if job_type == "Night Cut" and not request.form.get("crq", "").strip():
+            flash("CRQ Number is required for a Night Cut.", "error")
+            return render_template("job_form.html", markets=MARKETS, priorities=PRIORITIES, form=request.form), 400
         values = job_values_from_form(request.form, include_identity=True)
         values.update({
             "Project ID": project_id,
@@ -323,6 +327,10 @@ def job_detail(job_id: str):
                     "Work Performed": request.form.get("work_performed", ""),
                 }
             else:
+                job_type = request.form.get("job_type", job.get("job_type") or "Standard")
+                if job_type == "Night Cut" and not request.form.get("crq", "").strip():
+                    flash("CRQ Number is required for a Night Cut.", "error")
+                    return redirect(url_for("job_detail", job_id=job_id))
                 updates = job_values_from_form(request.form)
         elif action == "complete":
             updates = {

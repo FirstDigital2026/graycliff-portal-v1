@@ -36,6 +36,7 @@ MATCH_METHODS = ["Automatic", "Date Tie-Breaker", "Manual"]
 MASTER_COLUMNS = [
     ("Project ID", "TEXT_NUMBER", True, None),
     ("Market", "PICKLIST", False, MARKETS),
+    ("Job Type", "PICKLIST", False, ["Standard", "Night Cut"]),
     ("Task Name", "TEXT_NUMBER", False, None),
     ("Address", "TEXT_NUMBER", False, None),
     ("City", "TEXT_NUMBER", False, None),
@@ -153,9 +154,31 @@ class SmartsheetStore:
             payload["options"] = options
         return payload
 
+    def _ensure_sheet_columns(self, sheet_id: int, definitions: list[tuple[str, str, bool, list[str] | None]]) -> None:
+        sheet = self.get_sheet(sheet_id, force=True)
+        existing = {column["title"] for column in sheet.get("columns", [])}
+        missing = [column for column in definitions if column[0] not in existing and not column[2]]
+        if not missing:
+            return
+        payload = [self._column_payload(*column) for column in missing]
+        self.request("POST", f"/sheets/{sheet_id}/columns", json=payload)
+        self._sheet_cache.pop(int(sheet_id), None)
+
     def ensure_workspace(self) -> dict[str, Any]:
         with self._lock:
             if self._config.get("workspace_id") and self._config.get("master_sheet_id"):
+                # Keep existing installations current as the portal schema evolves.
+                for name, key in [
+                    (MASTER_SHEET, "master_sheet_id"),
+                    (BILLING_SHEET, "billing_batches_sheet_id"),
+                    (PAYMENTS_SHEET, "payments_sheet_id"),
+                    (MATCHES_SHEET, "payment_matches_sheet_id"),
+                    (USERS_SHEET, "users_sheet_id"),
+                    (CONFIG_SHEET, "configuration_sheet_id"),
+                ]:
+                    sheet_id = self._config.get(key)
+                    if sheet_id:
+                        self._ensure_sheet_columns(int(sheet_id), SHEET_DEFINITIONS[name])
                 return self._config
 
             all_workspaces: list[dict[str, Any]] = []
@@ -186,6 +209,7 @@ class SmartsheetStore:
                     result = self.request("POST", f"/workspaces/{workspace_id}/sheets", json=payload)
                     sheet_id = int(result["result"]["id"])
                 ids[sheet_name] = sheet_id
+                self._ensure_sheet_columns(sheet_id, columns)
 
             self._config = {
                 "workspace_id": workspace_id,
