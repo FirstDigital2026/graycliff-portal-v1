@@ -361,22 +361,29 @@ def mobile_sheet_definition(name: str) -> dict[str, Any]:
 def ensure_mobile_field_sheets() -> dict[str, Any]:
     created = []
     existing = []
+    sheet_ids: dict[str, int] = {}
 
     for name in (FLORENCE_MOBILE_SHEET, COLUMBIA_MOBILE_SHEET):
         sheet = find_sheet_by_name(name)
-        if sheet:
-            existing.append({"name": name, "id": sheet.get("id")})
+        if sheet and sheet.get("id"):
+            sheet_id = int(sheet["id"])
+            existing.append({"name": name, "id": sheet_id})
+            sheet_ids[name] = sheet_id
             continue
+
         result = store.create_sheet_in_workspace(
             WORKSPACE_ID,
             mobile_sheet_definition(name),
         )
-        created.append({"name": name, "id": result.get("id")})
+        sheet_id = int(result.get("id"))
+        created.append({"name": name, "id": sheet_id})
+        sheet_ids[name] = sheet_id
 
     return {
         "ok": True,
         "created": created,
         "existing": existing,
+        "sheet_ids": sheet_ids,
         "message": f"Created {len(created)} mobile sheet(s); {len(existing)} already existed.",
     }
 
@@ -420,12 +427,13 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
     if not setup.get("ok"):
         return setup
 
-    mobile_ids = {}
+    mobile_ids = {
+        name: int(sheet_id)
+        for name, sheet_id in setup.get("sheet_ids", {}).items()
+    }
     for name in (FLORENCE_MOBILE_SHEET, COLUMBIA_MOBILE_SHEET):
-        sheet = find_sheet_by_name(name)
-        if not sheet:
+        if name not in mobile_ids:
             return {"ok": False, "message": f"Unable to locate {name}."}
-        mobile_ids[name] = int(sheet["id"])
 
     master_rows = record_map(FIELD_SHEET_ID, force=True)
     master_by_project = by_project(master_rows)
