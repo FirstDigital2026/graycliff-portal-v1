@@ -11,3 +11,10 @@
 .billing-summary small{display:block;color:var(--muted);margin-bottom:6px}
 .billing-summary strong{display:block}
 @media(max-width:800px){.billing-summary{grid-template-columns:1fr 1fr}}
+
+.completion-panel{margin-top:20px;border:2px solid #2b82b8;background:#f4fbff}
+.completion-panel h2{margin:4px 0 8px}
+.completion-panel p{color:var(--muted)}
+.completion-submit{font-size:16px;padding:14px 22px;width:100%}
+.nav-refresh{display:inline;margin:0}
+.nav-refresh button{background:transparent;border:0;color:inherit;padding:0;font:inherit;cursor:pointer}
