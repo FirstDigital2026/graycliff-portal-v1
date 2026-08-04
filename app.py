@@ -331,7 +331,7 @@ def dashboard():
 @require_login
 @admin_required
 def smartsheet_status():
-    status = store.status()
+    status = store.status(verify=True)
     return status, (200 if status.get("connected") else 503)
 
 
@@ -349,6 +349,14 @@ def setup_smartsheet():
     except Exception as exc:
         flash(f"Smartsheet setup failed: {exc}", "error")
     return redirect(url_for("dashboard"))
+
+
+@app.route("/refresh", methods=["POST"])
+@require_login
+def refresh_portal():
+    store._sheet_cache.clear()
+    flash("Portal data refreshed from Smartsheet.", "success")
+    return redirect(request.referrer or url_for("dashboard"))
 
 
 @app.route("/jobs")
@@ -409,7 +417,7 @@ def new_job():
 @app.route("/jobs/<job_id>", methods=["GET", "POST"])
 @require_login
 def job_detail(job_id: str):
-    job = get_job(job_id, force=True)
+    job = get_job(job_id)
     if not job or not user_can_view_market(job):
         return "Not found", 404
 
@@ -474,9 +482,14 @@ def job_detail(job_id: str):
 
         if updates:
             store.update_record(master_sheet_id(), int(job["row_id"]), updates)
-            job = get_job(job_id, force=True)
-            if action == "complete" and job:
-                ensure_billing_record(job)
+            if action == "complete":
+                completed_job = dict(job)
+                completed_job.update({
+                    "status": "Field Complete",
+                    "date_field_completed": updates.get("Date Field Completed", ""),
+                    "work_performed": updates.get("Work Performed", job.get("work_performed", "")),
+                })
+                ensure_billing_record(completed_job)
             flash("Work order updated.", "success")
         return redirect(url_for("job_detail", job_id=job_id))
 
@@ -524,7 +537,7 @@ def upload(job_id: str):
     if not uploaded or not uploaded.filename:
         flash("Choose a field file.", "error")
         return redirect(url_for("job_detail", job_id=job_id))
-    job = get_job(job_id, force=True)
+    job = get_job(job_id)
     if not job:
         return "Not found", 404
     filename = secure_filename(uploaded.filename) or "attachment"
@@ -568,7 +581,7 @@ def download_file(file_id: int):
 @require_login
 @manager_required
 def billing_queue():
-    records = [normalize_billing(record) for record in store.list_records(billing_sheet_id(), force=True)]
+    records = [normalize_billing(record) for record in store.list_records(billing_sheet_id())]
     status_filter = request.args.get("status", "")
     if status_filter:
         records = [record for record in records if record.get("billing_status") == status_filter]
@@ -580,10 +593,10 @@ def billing_queue():
 @require_login
 @manager_required
 def billing_detail(job_id: str):
-    job = get_job(job_id, force=True)
+    job = get_job(job_id)
     if not job:
         return "Not found", 404
-    billing = get_billing_record(job_id, force=True) or ensure_billing_record(job)
+    billing = get_billing_record(job_id) or ensure_billing_record(job)
 
     if request.method == "POST":
         action = request.form.get("action", "")
@@ -653,10 +666,10 @@ def billing_detail(job_id: str):
 @require_login
 @manager_required
 def billing_upload(job_id: str):
-    job = get_job(job_id, force=True)
+    job = get_job(job_id)
     if not job:
         return "Not found", 404
-    billing = get_billing_record(job_id, force=True) or ensure_billing_record(job)
+    billing = get_billing_record(job_id) or ensure_billing_record(job)
     uploaded = request.files.get("file")
     if not uploaded or not uploaded.filename:
         flash("Choose a billing file.", "error")
@@ -703,8 +716,8 @@ def billing_download_file(file_id: int):
 @require_login
 @manager_required
 def billing_package(job_id: str):
-    job = get_job(job_id, force=True)
-    billing = get_billing_record(job_id, force=True)
+    job = get_job(job_id)
+    billing = get_billing_record(job_id)
     if not job or not billing:
         return "Not found", 404
     if billing.get("billing_status") not in ["Ready to Bill", "Invoiced", "Sent"]:

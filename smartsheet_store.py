@@ -273,12 +273,16 @@ class SmartsheetStore:
             return self._config
 
     def config(self) -> dict[str, Any]:
+        # Normal page loads must never re-check or mutate the workspace schema.
+        required = {"workspace_id", "master_sheet_id", "job_billing_sheet_id"}
+        if required.issubset(self._config):
+            return self._config
         return self.ensure_workspace()
 
     def get_sheet(self, sheet_id: int, *, include_attachments: bool = False, force: bool = False) -> dict[str, Any]:
         cache_key = int(sheet_id)
         cached = self._sheet_cache.get(cache_key)
-        if not force and cached and time.time() - cached[0] < 8:
+        if not force and cached and time.time() - cached[0] < 60:
             return cached[1]
         include = "?include=attachments" if include_attachments else ""
         sheet = self.request("GET", f"/sheets/{sheet_id}{include}")
@@ -346,7 +350,7 @@ class SmartsheetStore:
         prefix = "GCF-SP-FLO" if market == "Florence" else "GCF-SP-COL"
         maximum = 0
         config = self.config()
-        for record in self.list_records(config["master_sheet_id"], force=True):
+        for record in self.list_records(config["master_sheet_id"]):
             project_id = str(record.get("Project ID", ""))
             if project_id.startswith(prefix + "-"):
                 try:
@@ -379,18 +383,21 @@ class SmartsheetStore:
     def sync_user(self, email: str, display_name: str, role: str, markets: str, active: bool = True) -> None:
         config = self.config()
         sheet_id = config["users_sheet_id"]
-        existing = self.find_record(sheet_id, "Email", email, force=True)
+        existing = self.find_record(sheet_id, "Email", email)
         values = {"Email": email, "Display Name": display_name, "Role": role, "Markets": markets, "Active": active}
         if existing:
             self.update_record(sheet_id, existing["row_id"], values)
         else:
             self.add_record(sheet_id, values)
 
-    def status(self) -> dict[str, Any]:
+    def status(self, *, verify: bool = False) -> dict[str, Any]:
         if not self.enabled:
             return {"connected": False, "error": "SMARTSHEET_ACCESS_TOKEN is not configured."}
         try:
-            cfg = self.ensure_workspace()
+            if verify:
+                cfg = self.ensure_workspace()
+            else:
+                cfg = self.config()
             return {"connected": True, **cfg}
         except Exception as exc:
             return {"connected": False, "error": str(exc)}
