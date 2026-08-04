@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">GRAYCLIFF PROJECT</span><h1>{{job.get('Project ID')}}</h1><p>{{job.get('Task Name')}} · {{job.get('Address')}} {{job.get('City')}}</p></div>
+  <a class="secondary" href="{{url_for('customer_jobs')}}">Back</a>
+</div>
+<div class="two-col">
+<section class="panel">
+  <h2>Project status</h2>
+  <dl class="detail-grid">
+  {% for label in ['Market','Job Type','CRQ Number','Status','Due Date','Date Field Completed'] %}
+    <div><dt>{{label}}</dt><dd>{{job.get(label,'')}}</dd></div>
+  {% endfor %}
+  </dl>
+  <h3>Customer Notes</h3><p class="note">{{job.get('Customer Notes','—')}}</p>
+</section>
+<section class="panel">
+  <h2>Invoice and approved documents</h2>
+  {% if billing %}
+    <dl class="detail-grid">
+      {% for label in ['Billing Status','Invoice Number','Invoice Date','Invoice Amount','Payment Status','Payment Date'] %}
+      <div><dt>{{label}}</dt><dd>{{billing.get(label,'')}}</dd></div>
+      {% endfor %}
+    </dl>
+  {% else %}<p class="empty">No invoice has been published for this project.</p>{% endif %}
+  <div class="file-list">{% for f in attachments %}<a href="{{url_for('attachment_download',attachment_id=f.id)}}">{{f.name}}</a>{% else %}<p class="empty">Approved files will appear after office review.</p>{% endfor %}</div>
+</section>
+</div>
+{% endblock %}

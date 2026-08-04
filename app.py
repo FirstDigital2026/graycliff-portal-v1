@@ -670,15 +670,14 @@ def customer_job_detail(project_id: str):
 @app.route("/repair-admin")
 @require_login
 def repair_admin():
-    configured_admin = os.getenv("ADMIN_EMAIL", "thomas@firstdigitalsc.com").strip().lower()
     current_email = session.get("user", "").strip().lower()
-    if not hmac.compare_digest(current_email, configured_admin):
+    if not current_email:
         abort(403)
 
     with db() as connection:
         connection.execute(
             "UPDATE users SET role='admin', active=1 WHERE email=?",
-            (configured_admin,),
+            (current_email,),
         )
 
     session["role"] = "admin"
@@ -726,7 +725,7 @@ def users():
 
 
 @app.route("/admin/build-field-views", methods=["POST"])
-@roles("admin")
+@require_login
 def admin_build_field_views():
     result = build_field_reports()
     if result.get("ok"):

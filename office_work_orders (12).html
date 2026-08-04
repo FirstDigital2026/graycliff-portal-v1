@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">OFFICE REVIEW</span><h1>Field Work Orders</h1></div>
+  <form method="get" class="inline-filter">
+    <select name="status" onchange="this.form.submit()">
+      <option value="">All statuses</option>
+      {% for status in ['Unassigned','Assigned','In Progress','Field Complete','Missing Documents','Office Approved','Closed'] %}
+        <option value="{{status}}" {% if selected_status==status %}selected{% endif %}>{{status}}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Project</th><th>Market</th><th>Task</th><th>Assigned</th><th>Status</th><th>Due</th><th>Documents</th></tr></thead>
+<tbody>
+{% for job in jobs %}
+<tr>
+  <td><a href="{{url_for('office_work_order_detail',project_id=job['Project ID'])}}">{{job['Project ID']}}</a></td>
+  <td>{{job.get('Market','')}}</td>
+  <td>{{job.get('Task Name','')}}</td>
+  <td>{{job.get('Assigned Technician','')}}</td>
+  <td><span class="status">{{job.get('Status','')}}</span></td>
+  <td>{{job.get('Due Date','')}}</td>
+  <td>{{'Field ✓' if job.get('Field File Complete') else 'Field —'}} · {{'Photos ✓' if job.get('Required Photos Complete') else 'Photos —'}}</td>
+</tr>
+{% else %}<tr><td colspan="7" class="empty">No work orders found.</td></tr>{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

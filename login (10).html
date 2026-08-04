@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Sign in · {{app_name}}{% endblock %}
+{% block content %}
+<div class="login-shell">
+  <section class="login-card">
+    <span class="eyebrow">SECURE ACCESS</span>
+    <h1>Graycliff Project Portal</h1>
+    <p>First Digital office and customer access.</p>
+    <form method="post" class="stack">
+      <label>Email<input type="email" name="email" required autofocus></label>
+      <label>Password<input type="password" name="password" required></label>
+      <button class="primary">Sign in</button>
+    </form>
+  </section>
+</div>
+{% endblock %}
