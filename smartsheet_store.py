@@ -41,7 +41,6 @@ MASTER_COLUMNS = [
     ("Address", "TEXT_NUMBER", False, None),
     ("City", "TEXT_NUMBER", False, None),
     ("CRQ Number", "TEXT_NUMBER", False, None),
-    ("Daily No", "TEXT_NUMBER", False, None),
     ("Due Date", "DATE", False, None),
     ("Status", "PICKLIST", False, STATUSES),
     ("Assigned Technician", "TEXT_NUMBER", False, None),

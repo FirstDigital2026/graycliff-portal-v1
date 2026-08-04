@@ -79,6 +79,14 @@ def db() -> sqlite3.Connection:
             status TEXT DEFAULT 'Pending',
             notes TEXT
         );
+        CREATE TABLE IF NOT EXISTS job_activity(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            details TEXT,
+            performed_by TEXT,
+            performed_at TEXT NOT NULL
+        );
         """
     )
     existing = connection.execute("SELECT * FROM users WHERE lower(email)=lower(?)", ("admin@firstdigitalsc.com",)).fetchone()
@@ -126,6 +134,21 @@ def admin_required(function):
 
 def master_sheet_id() -> int:
     return int(store.config()["master_sheet_id"])
+
+
+def log_activity(project_id: str, action: str, details: str = "") -> None:
+    with db() as connection:
+        connection.execute(
+            "INSERT INTO job_activity(project_id,action,details,performed_by,performed_at) VALUES(?,?,?,?,?)",
+            (project_id, action, details, session.get("user", "system"), datetime.now().isoformat(timespec="seconds")),
+        )
+        connection.commit()
+
+
+def visible_files_for_role(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if session.get("role") == "Technician":
+        return [item for item in files if item.get("category") == "field"]
+    return files
 
 
 def normalize_job(record: dict[str, Any]) -> dict[str, Any]:
@@ -301,6 +324,7 @@ def new_job():
             "Archived": False,
         })
         store.add_record(master_sheet_id(), values)
+        log_activity(project_id, "Project Created", f"{market} · {job_type}")
         flash(f"Created {project_id}.", "success")
         return redirect(url_for("job_detail", job_id=project_id))
     return render_template("job_form.html", markets=MARKETS, priorities=PRIORITIES)
@@ -312,34 +336,122 @@ def job_detail(job_id: str):
     job = get_job(job_id, force=True)
     if not job or not user_can_view_market(job):
         return "Not found", 404
+
     if request.method == "POST":
-        action = request.form.get("action")
+        action = request.form.get("action", "")
         updates: dict[str, Any] = {}
+        role = session.get("role")
+
         if action == "claim":
             if not job.get("assigned_to"):
                 updates = {
-                    "Assigned Technician": session["user"], "Status": "Assigned",
+                    "Assigned Technician": session["user"],
+                    "Status": "Assigned",
                     "Date Assigned": date.today().isoformat(),
                 }
+                log_activity(job_id, "Job Claimed", session["user"])
+
+        elif action == "start":
+            if role == "Technician" and str(job.get("assigned_to", "")).lower() != str(session.get("user", "")).lower():
+                flash("This job is assigned to another technician.", "error")
+                return redirect(url_for("job_detail", job_id=job_id))
+            updates = {"Status": "In Progress"}
+            if not job.get("date_started"):
+                updates["Date Started"] = date.today().isoformat()
+            log_activity(job_id, "Field Work Started")
+
         elif action == "save":
-            if session.get("role") == "Technician":
+            if role == "Technician":
                 updates = {
-                    "Status": request.form.get("status", job.get("status", "Assigned")),
                     "Work Performed": request.form.get("work_performed", ""),
                 }
+                if request.form.get("status") in ["Assigned", "In Progress"]:
+                    updates["Status"] = request.form.get("status")
             else:
                 job_type = request.form.get("job_type", job.get("job_type") or "Standard")
                 if job_type == "Night Cut" and not request.form.get("crq", "").strip():
                     flash("CRQ Number is required for a Night Cut.", "error")
                     return redirect(url_for("job_detail", job_id=job_id))
                 updates = job_values_from_form(request.form)
+                assigned = request.form.get("assigned_to", "")
+                if assigned and assigned != job.get("assigned_to"):
+                    updates["Date Assigned"] = date.today().isoformat()
+                    if request.form.get("status") in ["", "Unassigned", "New"]:
+                        updates["Status"] = "Assigned"
+                elif not assigned and job.get("assigned_to"):
+                    updates["Status"] = "Unassigned"
+                log_activity(job_id, "Job Updated")
+
         elif action == "complete":
+            work = request.form.get("work_performed", job.get("work_performed", "")).strip()
+            if not work:
+                flash("Enter the work performed before completing the field work.", "error")
+                return redirect(url_for("job_detail", job_id=job_id))
             updates = {
-                "Status": "Field Complete", "Date Field Completed": date.today().isoformat(),
-                "Billing Status": "Review", "Work Performed": request.form.get("work_performed", job.get("work_performed", "")),
+                "Status": "Field Complete",
+                "Date Field Completed": date.today().isoformat(),
+                "Billing Status": "Review",
+                "Work Performed": work,
             }
+            log_activity(job_id, "Submitted for Office Review")
+
+        elif action == "approve_review":
+            if role not in ["Admin", "Manager", "Billing"]:
+                return "Forbidden", 403
+            updates = {"Status": "Ready to Bill", "Billing Status": "Ready to Bill"}
+            log_activity(job_id, "Office Review Approved")
+
+        elif action == "missing_documents":
+            if role not in ["Admin", "Manager", "Billing"]:
+                return "Forbidden", 403
+            updates = {"Status": "Missing Documents", "Billing Status": "Missing Documents"}
+            note = request.form.get("review_note", "").strip()
+            if note:
+                updates["Manager Notes"] = ((job.get("manager_notes") or "") + "\n" + "Missing documents: " + note).strip()
+            log_activity(job_id, "Returned for Missing Documents", note)
+
+        elif action == "mark_invoiced":
+            if role not in ["Admin", "Manager", "Billing"]:
+                return "Forbidden", 403
+            invoice_number = request.form.get("invoice_number", "").strip()
+            invoice_amount = request.form.get("invoice_amount", "").strip()
+            if not invoice_number or not invoice_amount:
+                flash("Invoice number and amount are required.", "error")
+                return redirect(url_for("job_detail", job_id=job_id))
+            updates = {
+                "Status": "Billed",
+                "Billing Status": "Invoiced",
+                "Invoice Number": invoice_number,
+                "Invoice Date": request.form.get("invoice_date") or date.today().isoformat(),
+                "Invoice Amount": invoice_amount,
+                "Payment Status": "Unpaid",
+                "Balance": invoice_amount,
+            }
+            log_activity(job_id, "Marked Invoiced", f"{invoice_number} · ${invoice_amount}")
+
+        elif action == "mark_paid":
+            if role not in ["Admin", "Manager", "Billing"]:
+                return "Forbidden", 403
+            amount = request.form.get("amount_paid", "").strip() or str(job.get("invoice_amount") or "")
+            updates = {
+                "Status": "Paid",
+                "Payment Status": "Paid",
+                "Payment Date": request.form.get("payment_date") or date.today().isoformat(),
+                "Payment Number": request.form.get("payment_number", "").strip(),
+                "Amount Paid": amount,
+                "Balance": 0,
+            }
+            log_activity(job_id, "Payment Applied", f"{request.form.get('payment_number','')} · ${amount}")
+
+        elif action == "close":
+            if role not in ["Admin", "Manager", "Billing"]:
+                return "Forbidden", 403
+            updates = {"Status": "Closed", "Archived": True}
+            log_activity(job_id, "Job Closed")
+
         if updates:
             store.update_record(master_sheet_id(), int(job["row_id"]), updates)
+            flash("Job updated.", "success")
         return redirect(url_for("job_detail", job_id=job_id))
 
     attachments = store.list_row_attachments(master_sheet_id(), int(job["row_id"]))
@@ -351,6 +463,10 @@ def job_detail(job_id: str):
         technicians = connection.execute(
             "SELECT email,display_name FROM users WHERE is_active=1 AND role='Technician' ORDER BY display_name"
         ).fetchall()
+        activity = connection.execute(
+            "SELECT * FROM job_activity WHERE project_id=? ORDER BY id DESC LIMIT 30", (job_id,)
+        ).fetchall()
+
     files = []
     for attachment in attachments:
         attachment_id = int(attachment["id"])
@@ -363,9 +479,17 @@ def job_detail(job_id: str):
             "category": category,
             "uploaded_at": attachment.get("createdAt", ""),
         })
+
     return render_template(
-        "job_detail.html", job=job, files=files, statuses=STATUSES, priorities=PRIORITIES,
-        billing_statuses=BILLING_STATUSES, payment_statuses=PAYMENT_STATUSES, technicians=technicians,
+        "job_detail.html",
+        job=job,
+        files=visible_files_for_role(files),
+        statuses=STATUSES,
+        priorities=PRIORITIES,
+        billing_statuses=BILLING_STATUSES,
+        payment_statuses=PAYMENT_STATUSES,
+        technicians=technicians,
+        activity=activity,
     )
 
 
@@ -396,6 +520,7 @@ def upload(job_id: str):
                 (attachment_id, job_id, category, filename, session["user"], datetime.now().isoformat(timespec="seconds")),
             )
             connection.commit()
+        log_activity(job_id, "File Uploaded", f"{category}: {filename}")
         flash(f"Uploaded {filename}.", "success")
     finally:
         temp_path.unlink(missing_ok=True)
@@ -440,7 +565,22 @@ def billing_package(job_id: str):
     output_folder = FILE_PATH / job_id
     output_folder.mkdir(parents=True, exist_ok=True)
     output = output_folder / f"{job_id}-Billing-Package.zip"
+    if job.get("billing_status") not in ["Ready to Bill", "Invoiced", "Sent"]:
+        flash("Approve office review before generating the billing package.", "error")
+        return redirect(url_for("job_detail", job_id=job_id))
+    manifest = {
+        "project_id": job_id,
+        "market": job.get("market"),
+        "task_name": job.get("task_name"),
+        "job_type": job.get("job_type"),
+        "crq": job.get("crq") if job.get("job_type") == "Night Cut" else "",
+        "work_performed": job.get("work_performed"),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "generated_by": session.get("user"),
+    }
+    included = 0
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("billing-manifest.json", json.dumps(manifest, indent=2))
         for attachment in attachments:
             attachment_id = int(attachment["id"])
             if attachment_id not in billing_ids:
@@ -451,7 +591,9 @@ def billing_package(job_id: str):
             response = requests.get(info["url"], timeout=120)
             response.raise_for_status()
             archive.writestr(info.get("name", f"attachment-{attachment_id}"), response.content)
+            included += 1
     store.update_record(master_sheet_id(), int(job["row_id"]), {"Billing Package Path": output.name})
+    log_activity(job_id, "Billing Package Generated", f"{included} billing file(s)")
     return send_file(output, as_attachment=True, download_name=output.name)
 
 
