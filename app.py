@@ -369,12 +369,18 @@ def build_field_reports() -> dict[str, Any]:
                     "operator": "AND",
                     "criteria": [
                         {
-                            "columnId": market_column["id"],
+                            "column": {
+                                "title": market_column["title"],
+                                "type": market_column["type"],
+                            },
                             "operator": "EQUAL",
                             "values": [market],
                         },
                         {
-                            "columnId": status_column["id"],
+                            "column": {
+                                "title": status_column["title"],
+                                "type": status_column["type"],
+                            },
                             "operator": "NOT_EQUAL",
                             "values": ["Closed"],
                         },
