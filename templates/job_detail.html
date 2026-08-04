@@ -122,6 +122,31 @@
   {% endfor %}
 </section>
 
+
+{% if job.status not in ['Field Complete','Closed'] %}
+<section class="panel completion-panel">
+  <span class="eyebrow">COMPLETE WORK ORDER</span>
+  <h2>Submit this work order to the office</h2>
+  <p>Work Performed must be filled in above. Uploaded field files stay attached to this work order.</p>
+  <form method="post">
+    <input type="hidden" name="action" value="complete">
+    <input type="hidden" name="work_performed" id="completion-work-performed">
+    <button class="complete-button completion-submit" type="submit">Submit Work Order Complete</button>
+  </form>
+</section>
+<script>
+(function(){
+  const form = document.querySelector('.completion-panel form');
+  const hidden = document.getElementById('completion-work-performed');
+  if (!form || !hidden) return;
+  form.addEventListener('submit', function(){
+    const textarea = document.querySelector('textarea[name="work_performed"]');
+    hidden.value = textarea ? textarea.value : '';
+  });
+})();
+</script>
+{% endif %}
+
 <section class="panel activity-panel">
   <div class="section-head">
     <div><span class="eyebrow">WORK ORDER HISTORY</span><h2>Activity</h2></div>
