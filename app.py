@@ -51,14 +51,22 @@ def login():
     if request.method=="POST":
         with db() as c: u=c.execute("SELECT * FROM users WHERE lower(email)=lower(?) AND is_active=1",(request.form["email"],)).fetchone()
         if u and check_password_hash(u["password_hash"],request.form["password"]):
-            session.update(user=u["email"],display_name=u["display_name"],role=u["role"],markets=u["markets"]); return redirect(request.args.get("next") or url_for("dashboard"))
+            session.update(user=u["email"],display_name=u["display_name"],role=u["role"],markets=u["markets"])
+            next_url=request.args.get("next","")
+            if not next_url.startswith("/") or next_url.startswith("//"):
+                next_url=url_for("dashboard")
+            return redirect(next_url)
         flash("Invalid login.","error")
     return render_template("login.html")
 
 @app.route("/logout")
 def logout(): session.clear(); return redirect(url_for("login"))
 
+@app.route("/healthz")
+def healthz(): return {"status":"ok"},200
+
 @app.route("/")
+@app.route("/dashboard")
 @require_login
 def dashboard():
     with db() as c:
