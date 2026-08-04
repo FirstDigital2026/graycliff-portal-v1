@@ -87,6 +87,24 @@ def init_db() -> None:
             """
         )
 
+        # Migrate an older persistent users table from the previous portal build.
+        existing_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(users)").fetchall()
+        }
+        migrations = {
+            "display_name": "TEXT NOT NULL DEFAULT ''",
+            "password_hash": "TEXT NOT NULL DEFAULT ''",
+            "role": "TEXT NOT NULL DEFAULT 'graycliff'",
+            "active": "INTEGER NOT NULL DEFAULT 1",
+            "created_at": "TEXT NOT NULL DEFAULT ''",
+        }
+        for column_name, definition in migrations.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    f"ALTER TABLE users ADD COLUMN {column_name} {definition}"
+                )
+
         admin_email = os.getenv("ADMIN_EMAIL", "thomas@firstdigitalsc.com").strip().lower()
         admin_password = os.getenv("ADMIN_PASSWORD", "")
         existing = connection.execute(
@@ -104,6 +122,22 @@ def init_db() -> None:
                     generate_password_hash(admin_password),
                     "admin",
                     datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+        elif existing and admin_password:
+            # Ensure the retained admin account from an older build can sign in.
+            connection.execute(
+                """
+                UPDATE users
+                SET display_name=?, password_hash=?, role='admin', active=1,
+                    created_at=CASE WHEN created_at='' THEN ? ELSE created_at END
+                WHERE email=?
+                """,
+                (
+                    "Thomas Bramlette II",
+                    generate_password_hash(admin_password),
+                    datetime.now().isoformat(timespec="seconds"),
+                    admin_email,
                 ),
             )
 
