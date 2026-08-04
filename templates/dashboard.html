@@ -11,10 +11,10 @@
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
 </div>
 <section class="panel">
-  <h2>Smartsheet field views</h2>
-  <p>Technicians continue working in Smartsheet mobile. Create the Florence and Columbia editable field reports from the master work-order sheet.</p>
-  <form method="post" action="{{url_for('admin_build_field_views')}}">
-    <button class="primary">Build Florence &amp; Columbia Views</button>
+  <h2>Smartsheet mobile field sheets</h2>
+  <p>Technicians work from normal Smartsheet sheets with Mobile View. The cloud service keeps Florence and Columbia technician sheets synchronized with the master work-order sheet.</p>
+  <form method="post" action="{{url_for('admin_build_mobile_field_sheets')}}">
+    <button class="primary">Build &amp; Sync Mobile Field Sheets</button>
   </form>
 </section>
 {% endblock %}

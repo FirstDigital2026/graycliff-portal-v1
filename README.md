@@ -85,3 +85,26 @@ This creates two reports in the Graycliff Portal workspace:
 - Columbia Field Work
 
 They are sourced from the single Graycliff Field Work Orders master sheet. Technicians can use the reports from Smartsheet mobile after the reports and source sheet are shared with the appropriate people.
+
+
+## Mobile technician sheets
+
+Use the dashboard button:
+
+`Build & Sync Mobile Field Sheets`
+
+This creates:
+
+- Florence Technician Jobs
+- Columbia Technician Jobs
+
+Each is a real Smartsheet sheet, so technicians can use the standard Smartsheet Mobile View.
+
+Cloud sync behavior:
+
+- Manager-controlled job details flow from the master sheet to the market sheet.
+- Technician status, dates, work performed, and completion checkboxes flow back to the master.
+- Row attachments are copied both directions and de-duplicated by filename.
+- Closed or archived jobs are removed from technician sheets.
+- Jobs moved between markets are moved to the correct market sheet.
+- Sync runs on the same cloud interval as the technician-directory sync.

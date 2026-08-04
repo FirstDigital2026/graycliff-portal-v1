@@ -124,6 +124,60 @@ class SmartsheetClient:
         result = self._request("POST", "/reports", body=body)
         return result.get("result", result)
 
+    def list_sheets(self) -> list[dict[str, Any]]:
+        payload = self._request("GET", "/sheets", query={"pageSize": 100})
+        return payload.get("data", [])
+
+    def create_sheet_in_workspace(self, workspace_id: int, body: dict[str, Any]) -> dict[str, Any]:
+        result = self._request("POST", f"/workspaces/{workspace_id}/sheets", body=body)
+        return result.get("result", result)
+
+    def delete_row(self, sheet_id: int, row_id: int) -> Any:
+        result = self._request(
+            "DELETE",
+            f"/sheets/{sheet_id}/rows",
+            query={"ids": str(row_id), "ignoreRowsNotFound": "true"},
+        )
+        self.invalidate(f"sheet:{sheet_id}")
+        return result
+
+    def attach_file_to_row(
+        self,
+        sheet_id: int,
+        row_id: int,
+        *,
+        filename: str,
+        mime_type: str,
+        data: bytes,
+    ) -> Any:
+        boundary = "----FirstDigitalSmartsheetBoundary"
+        safe_name = filename.replace('"', "")
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="file"; filename="{safe_name}"\r\n'
+            f"Content-Type: {mime_type or 'application/octet-stream'}\r\n\r\n"
+        ).encode("utf-8") + data + f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        url = BASE_URL.rstrip("/") + f"/sheets/{sheet_id}/rows/{row_id}/attachments"
+        headers = {
+            "Authorization": f"Bearer {self.token}",
+            "Accept": "application/json",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "smartsheet-integration-source": INTEGRATION_SOURCE,
+        }
+        req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+        try:
+            with urllib.request.urlopen(req, timeout=180) as response:
+                raw = response.read()
+                result = json.loads(raw.decode("utf-8")) if raw else {}
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode("utf-8", errors="replace")
+            raise SmartsheetError(
+                f"POST row attachment failed ({exc.code}): {payload[:1200]}"
+            ) from exc
+        self.invalidate(f"sheet:{sheet_id}")
+        return result
+
     def update_column(self, sheet_id: int, column_id: int, body: dict[str, Any]) -> Any:
         result = self._request("PUT", f"/sheets/{sheet_id}/columns/{column_id}", body=body)
         self.invalidate(f"sheet:{sheet_id}")

@@ -38,6 +38,40 @@ PAYMENT_MATCHES_SHEET_ID = 435877095362436
 
 ASSIGNED_TECH_COLUMN_ID = 7656679053496196
 
+FLORENCE_MOBILE_SHEET = "Florence Technician Jobs"
+COLUMBIA_MOBILE_SHEET = "Columbia Technician Jobs"
+
+MOBILE_COLUMNS = [
+    ("Project ID", "TEXT_NUMBER", True),
+    ("Priority", "PICKLIST", False),
+    ("Task Name", "TEXT_NUMBER", False),
+    ("Address", "TEXT_NUMBER", False),
+    ("City", "TEXT_NUMBER", False),
+    ("Job Type", "PICKLIST", False),
+    ("CRQ Number", "TEXT_NUMBER", False),
+    ("Due Date", "DATE", False),
+    ("Assigned Technician", "CONTACT_LIST", False),
+    ("Status", "PICKLIST", False),
+    ("Date Started", "DATE", False),
+    ("Date Field Completed", "DATE", False),
+    ("Work Performed", "TEXT_NUMBER", False),
+    ("Field File Complete", "CHECKBOX", False),
+    ("Required Photos Complete", "CHECKBOX", False),
+    ("Manager Notes", "TEXT_NUMBER", False),
+    ("Customer Notes", "TEXT_NUMBER", False),
+    ("Master Row ID", "TEXT_NUMBER", False),
+]
+
+MANAGER_TO_MOBILE_FIELDS = [
+    "Priority", "Task Name", "Address", "City", "Job Type", "CRQ Number",
+    "Due Date", "Assigned Technician", "Manager Notes", "Customer Notes",
+]
+
+TECH_TO_MASTER_FIELDS = [
+    "Status", "Date Started", "Date Field Completed", "Work Performed",
+    "Field File Complete", "Required Photos Complete",
+]
+
 DATA_PATH = Path(os.getenv("DATA_PATH", "/tmp/graycliff.db"))
 DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -295,6 +329,215 @@ def sync_technician_contacts() -> dict[str, Any]:
 
 
 
+
+def find_sheet_by_name(name: str) -> dict[str, Any] | None:
+    for sheet in store.list_sheets():
+        if sheet.get("name") == name:
+            return sheet
+    return None
+
+
+def mobile_sheet_definition(name: str) -> dict[str, Any]:
+    source = store.get_sheet(FIELD_SHEET_ID, force=True)
+    source_columns = {c["title"]: c for c in source.get("columns", [])}
+
+    columns = []
+    for title, col_type, primary in MOBILE_COLUMNS:
+        source_col = source_columns.get(title, {})
+        item = {
+            "title": title,
+            "type": col_type,
+            "primary": primary,
+        }
+        if col_type == "PICKLIST":
+            item["options"] = source_col.get("options", [])
+        elif col_type == "CONTACT_LIST":
+            item["contactOptions"] = source_col.get("contactOptions", [])
+        columns.append(item)
+
+    return {"name": name, "columns": columns}
+
+
+def ensure_mobile_field_sheets() -> dict[str, Any]:
+    created = []
+    existing = []
+
+    for name in (FLORENCE_MOBILE_SHEET, COLUMBIA_MOBILE_SHEET):
+        sheet = find_sheet_by_name(name)
+        if sheet:
+            existing.append({"name": name, "id": sheet.get("id")})
+            continue
+        result = store.create_sheet_in_workspace(
+            WORKSPACE_ID,
+            mobile_sheet_definition(name),
+        )
+        created.append({"name": name, "id": result.get("id")})
+
+    return {
+        "ok": True,
+        "created": created,
+        "existing": existing,
+        "message": f"Created {len(created)} mobile sheet(s); {len(existing)} already existed.",
+    }
+
+
+def _attachment_names(sheet_id: int, row_id: int) -> set[str]:
+    return {
+        str(item.get("name", "")).strip()
+        for item in store.list_row_attachments(sheet_id, row_id)
+        if str(item.get("name", "")).strip()
+    }
+
+
+def _copy_new_attachments(
+    source_sheet_id: int,
+    source_row_id: int,
+    target_sheet_id: int,
+    target_row_id: int,
+) -> int:
+    copied = 0
+    target_names = _attachment_names(target_sheet_id, target_row_id)
+    for attachment in store.list_row_attachments(source_sheet_id, source_row_id):
+        name = str(attachment.get("name", "")).strip()
+        attachment_id = attachment.get("id")
+        if not name or not attachment_id or name in target_names:
+            continue
+        data, filename, mime = store.download_attachment(int(attachment_id))
+        store.attach_file_to_row(
+            target_sheet_id,
+            target_row_id,
+            filename=filename,
+            mime_type=mime,
+            data=data,
+        )
+        target_names.add(name)
+        copied += 1
+    return copied
+
+
+def sync_mobile_field_sheets() -> dict[str, Any]:
+    setup = ensure_mobile_field_sheets()
+    if not setup.get("ok"):
+        return setup
+
+    mobile_ids = {}
+    for name in (FLORENCE_MOBILE_SHEET, COLUMBIA_MOBILE_SHEET):
+        sheet = find_sheet_by_name(name)
+        if not sheet:
+            return {"ok": False, "message": f"Unable to locate {name}."}
+        mobile_ids[name] = int(sheet["id"])
+
+    master_rows = record_map(FIELD_SHEET_ID, force=True)
+    master_by_project = by_project(master_rows)
+
+    stats = {
+        "created_rows": 0,
+        "updated_mobile_rows": 0,
+        "updated_master_rows": 0,
+        "copied_attachments": 0,
+        "archived_rows": 0,
+    }
+
+    # Load both mobile sheets once.
+    mobile_rows_by_sheet = {}
+    mobile_by_project_by_sheet = {}
+    for sheet_name, sheet_id in mobile_ids.items():
+        rows = record_map(sheet_id, force=True)
+        mobile_rows_by_sheet[sheet_name] = rows
+        mobile_by_project_by_sheet[sheet_name] = by_project(rows)
+
+    for project_id, master in master_by_project.items():
+        market = str(master.get("Market", "")).strip()
+        target_name = (
+            FLORENCE_MOBILE_SHEET if market == "Florence"
+            else COLUMBIA_MOBILE_SHEET if market == "Columbia"
+            else ""
+        )
+        if not target_name:
+            continue
+
+        target_id = mobile_ids[target_name]
+        target_rows = mobile_by_project_by_sheet[target_name]
+        mobile = target_rows.get(project_id)
+
+        # Archived or closed jobs do not stay in the technician sheets.
+        should_hide = bool(master.get("Archived")) or str(master.get("Status", "")).strip() == "Closed"
+        if should_hide:
+            if mobile:
+                store.delete_row(target_id, int(mobile["_row_id"]))
+                stats["archived_rows"] += 1
+            continue
+
+        if not mobile:
+            values = {"Project ID": project_id, "Master Row ID": str(master["_row_id"])}
+            for field in MANAGER_TO_MOBILE_FIELDS + TECH_TO_MASTER_FIELDS:
+                values[field] = master.get(field, "")
+            new_row = store.add_row(target_id, values)
+            mobile_row_id = int(new_row.get("id"))
+            stats["created_rows"] += 1
+            stats["copied_attachments"] += _copy_new_attachments(
+                FIELD_SHEET_ID,
+                int(master["_row_id"]),
+                target_id,
+                mobile_row_id,
+            )
+            continue
+
+        # Manager-controlled values always flow from master -> mobile.
+        mobile_updates = {"Master Row ID": str(master["_row_id"])}
+        for field in MANAGER_TO_MOBILE_FIELDS:
+            if mobile.get(field, "") != master.get(field, ""):
+                mobile_updates[field] = master.get(field, "")
+        if len(mobile_updates) > 1 or str(mobile.get("Master Row ID", "")) != str(master["_row_id"]):
+            store.update_row(target_id, int(mobile["_row_id"]), mobile_updates)
+            stats["updated_mobile_rows"] += 1
+
+        # Technician-controlled values flow mobile -> master.
+        master_updates = {}
+        for field in TECH_TO_MASTER_FIELDS:
+            if master.get(field, "") != mobile.get(field, ""):
+                master_updates[field] = mobile.get(field, "")
+        if master_updates:
+            store.update_row(FIELD_SHEET_ID, int(master["_row_id"]), master_updates)
+            stats["updated_master_rows"] += 1
+
+        # Attachments flow both directions and are de-duplicated by filename.
+        stats["copied_attachments"] += _copy_new_attachments(
+            target_id,
+            int(mobile["_row_id"]),
+            FIELD_SHEET_ID,
+            int(master["_row_id"]),
+        )
+        stats["copied_attachments"] += _copy_new_attachments(
+            FIELD_SHEET_ID,
+            int(master["_row_id"]),
+            target_id,
+            int(mobile["_row_id"]),
+        )
+
+    # Remove jobs from wrong market sheets or jobs no longer present in master.
+    for sheet_name, rows in mobile_rows_by_sheet.items():
+        expected_market = "Florence" if sheet_name == FLORENCE_MOBILE_SHEET else "Columbia"
+        sheet_id = mobile_ids[sheet_name]
+        for mobile in rows:
+            project_id = str(mobile.get("Project ID", "")).strip()
+            master = master_by_project.get(project_id)
+            if not master or str(master.get("Market", "")).strip() != expected_market:
+                store.delete_row(sheet_id, int(mobile["_row_id"]))
+                stats["archived_rows"] += 1
+
+    return {
+        "ok": True,
+        "message": (
+            f"Mobile sync complete: {stats['created_rows']} row(s) created, "
+            f"{stats['updated_master_rows']} master row(s) updated, "
+            f"{stats['updated_mobile_rows']} mobile row(s) refreshed, "
+            f"{stats['copied_attachments']} attachment(s) copied."
+        ),
+        **stats,
+    }
+
+
 def build_field_reports() -> dict[str, Any]:
     """Create the Florence and Columbia technician reports in the Graycliff workspace."""
     sheet = store.get_sheet(FIELD_SHEET_ID, force=True)
@@ -463,6 +706,14 @@ def start_scheduler() -> None:
         "interval",
         minutes=minutes,
         id="billing_queue_sync",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        sync_mobile_field_sheets,
+        "interval",
+        minutes=minutes,
+        id="mobile_field_sheet_sync",
         max_instances=1,
         coalesce=True,
     )
@@ -728,6 +979,19 @@ def users():
         ).fetchall()
     return render_template("users.html", users=all_users)
 
+
+
+
+@app.route("/admin/build-mobile-field-sheets", methods=["POST"])
+@require_login
+def admin_build_mobile_field_sheets():
+    result = sync_mobile_field_sheets()
+    if result.get("ok"):
+        flash(result.get("message", "Mobile field sheets are ready."), "success")
+        log_action("Build Mobile Field Sheets", "workspace", str(WORKSPACE_ID), str(result))
+    else:
+        flash(result.get("message", "Unable to build mobile field sheets."), "error")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/admin/build-field-views", methods=["POST"])
