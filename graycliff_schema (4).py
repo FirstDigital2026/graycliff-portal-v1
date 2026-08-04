@@ -1,6 +1,7 @@
 MASTER_COLUMNS = [
     ("Project ID", "TEXT_NUMBER", True),
     ("Market", "PICKLIST", False),
+    ("Job Type", "PICKLIST", False),
     ("Task Name", "TEXT_NUMBER", False),
     ("Address", "TEXT_NUMBER", False),
     ("City", "TEXT_NUMBER", False),
