@@ -23,7 +23,14 @@ DB_PATH = Path(os.environ.get("DATA_PATH", "/tmp/graycliff.db"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 FILE_PATH = Path(os.environ.get("FILE_PATH", "/tmp/graycliff-files"))
 FILE_PATH.mkdir(parents=True, exist_ok=True)
-app = Flask(__name__)
+# Support the flat GitHub layout currently used by this repository.
+# Templates live beside app.py, and only app.css is exposed as a static asset.
+app = Flask(__name__, template_folder=str(Path(__file__).resolve().parent), static_folder=None)
+
+@app.route("/static/app.css")
+def app_css():
+    return send_file(Path(__file__).resolve().parent / "app.css", mimetype="text/css")
+
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-change-me")
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "ChangeMeNow!")
