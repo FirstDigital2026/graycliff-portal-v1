@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">BILLING RECORD</span><h1>{{billing.get('Project ID')}}</h1><p>{{billing.get('Task Name')}}</p></div>
+  <a class="secondary" href="{{url_for('billing_queue')}}">Back</a>
+</div>
+<div class="two-col">
+<section class="panel">
+<form method="post" class="form-grid">
+  <label>Billing Status<select name="billing_status">{% for x in ['Not Ready','Review','Missing Documents','Ready to Bill','Invoiced','Sent'] %}<option {% if billing.get('Billing Status')==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+  <label>Payment Status<select name="payment_status">{% for x in ['Unpaid','Partially Paid','Paid','Retention Outstanding','Exception'] %}<option {% if billing.get('Payment Status')==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+  <label>Invoice Number<input name="invoice_number" value="{{billing.get('Invoice Number','')}}"></label>
+  <label>Invoice Date<input type="date" name="invoice_date" value="{{billing.get('Invoice Date','')}}"></label>
+  <label>Invoice Amount<input name="invoice_amount" value="{{billing.get('Invoice Amount','')}}"></label>
+  <label class="wide">Office Notes<textarea name="office_notes">{{billing.get('Office Notes','')}}</textarea></label>
+  <button class="primary wide">Save Billing Record</button>
+</form>
+</section>
+<section class="panel">
+  <h2>Field package</h2>
+  <p><strong>Work performed:</strong> {{billing.get('Work Performed','')}}</p>
+  {% if job %}<p><strong>CRQ:</strong> {{job.get('CRQ Number','')}} · <strong>Type:</strong> {{job.get('Job Type','')}}</p>{% endif %}
+  <div class="file-list">{% for f in attachments %}<a href="{{url_for('attachment_download',attachment_id=f.id)}}">{{f.name}}</a>{% else %}<p class="empty">No field attachments.</p>{% endfor %}</div>
+  <div class="callout">Rate-card calculation, Zoho invoice creation, and billing-package generation are the next integration layer. This screen is already separated from technician operations.</div>
+</section>
+</div>
+{% endblock %}

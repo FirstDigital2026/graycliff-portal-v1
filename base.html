@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+</head>
+<body>
+<header class="site-header">
+  <a class="brand" href="{{ url_for('dashboard') if current_user else url_for('login') }}">
+    <img src="{{ url_for('static', filename='first-digital-logo.png') }}" alt="First Digital">
+    <span>Graycliff Portal</span>
+  </a>
+  {% if current_user %}
+  <nav>
+    {% if role in ['admin','office'] %}
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('office_work_orders') }}">Work Review</a>
+      <a href="{{ url_for('billing_queue') }}">Billing</a>
+    {% endif %}
+    {% if role in ['graycliff','admin'] %}
+      <a href="{{ url_for('customer_jobs') }}">Graycliff View</a>
+    {% endif %}
+    {% if role == 'admin' %}
+      <a href="{{ url_for('users') }}">Users</a>
+      <form method="post" action="{{ url_for('admin_sync') }}"><button class="nav-button">Sync Now</button></form>
+    {% endif %}
+    <a href="{{ url_for('logout') }}">Log out</a>
+  </nav>
+  {% endif %}
+</header>
+<main class="page">
+  {% with messages=get_flashed_messages(with_categories=true) %}
+    {% for category,message in messages %}
+      <div class="flash {{category}}">{{message}}</div>
+    {% endfor %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

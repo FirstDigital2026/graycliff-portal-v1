@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">WORK ORDER</span><h1>{{job.get('Project ID')}}</h1><p>{{job.get('Task Name')}} · {{job.get('Address')}} {{job.get('City')}}</p></div>
+  <a class="secondary" href="{{url_for('office_work_orders')}}">Back</a>
+</div>
+<div class="two-col">
+<section class="panel">
+  <h2>Field information</h2>
+  <dl class="detail-grid">
+    {% for label in ['Market','Job Type','CRQ Number','Priority','Assigned Technician','Status','Due Date','Date Started','Date Field Completed'] %}
+      <div><dt>{{label}}</dt><dd>{{job.get(label,'')}}</dd></div>
+    {% endfor %}
+  </dl>
+  <h3>Work Performed</h3><p class="note">{{job.get('Work Performed','—')}}</p>
+  <h3>Manager Notes</h3><p class="note">{{job.get('Manager Notes','—')}}</p>
+</section>
+<section class="panel">
+  <h2>Required documents</h2>
+  <div class="check-row"><span>Field File</span><strong>{{'Complete' if job.get('Field File Complete') else 'Missing'}}</strong></div>
+  <div class="check-row"><span>Required Photos</span><strong>{{'Complete' if job.get('Required Photos Complete') else 'Missing'}}</strong></div>
+  <div class="file-list">
+  {% for f in attachments %}
+    <a href="{{url_for('attachment_download',attachment_id=f.id)}}">{{f.name}}</a>
+  {% else %}<p class="empty">No row attachments.</p>{% endfor %}
+  </div>
+  <form method="post" action="{{url_for('review_work_order',project_id=job.get('Project ID'))}}" class="button-row">
+    <button name="action" value="missing" class="danger">Missing Documents</button>
+    <button name="action" value="approve" class="primary">Approve for Office</button>
+  </form>
+  {% if billing %}<p class="callout">Billing record: {{billing.get('Billing Status','Review')}}</p>{% endif %}
+</section>
+</div>
+{% endblock %}

@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">GRAYCLIFF CUSTOMER VIEW</span><h1>Projects</h1><p>Current project status and approved billing information.</p></div></div>
+<div class="table-wrap">
+<table>
+<thead><tr><th>Project</th><th>Market</th><th>Task</th><th>Location</th><th>Status</th><th>Due</th><th>Invoice</th><th>Payment</th></tr></thead>
+<tbody>
+{% for job in jobs %}
+<tr>
+  <td><a href="{{url_for('customer_job_detail',project_id=job.get('Project ID'))}}">{{job.get('Project ID')}}</a></td>
+  <td>{{job.get('Market','')}}</td><td>{{job.get('Task Name','')}}</td><td>{{job.get('Address','')}} {{job.get('City','')}}</td>
+  <td><span class="status">{{job.get('Status','')}}</span></td><td>{{job.get('Due Date','')}}</td>
+  <td>{{job._billing.get('Invoice Number','') if job._billing else ''}}</td>
+  <td>{{job._billing.get('Payment Status','') if job._billing else ''}}</td>
+</tr>
+{% else %}<tr><td colspan="8" class="empty">No projects available.</td></tr>{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

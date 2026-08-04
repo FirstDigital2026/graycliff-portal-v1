@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">FIRST DIGITAL OFFICE · ADMINISTRATOR</span><h1>Graycliff Operations</h1></div>
+</div>
+<div class="metric-grid">
+  <a class="metric" href="{{url_for('office_work_orders')}}"><strong>{{metrics.open}}</strong><span>Open Work Orders</span></a>
+  <a class="metric" href="{{url_for('office_work_orders',status='Field Complete')}}"><strong>{{metrics.field_complete}}</strong><span>Field Complete</span></a>
+  <a class="metric" href="{{url_for('office_work_orders',status='Missing Documents')}}"><strong>{{metrics.missing}}</strong><span>Missing Documents</span></a>
+  <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.ready_to_bill}}</strong><span>Ready to Bill</span></a>
+  <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
+</div>
+<section class="panel">
+  <h2>Smartsheet field views</h2>
+  <p>Technicians continue working in Smartsheet mobile. Create the Florence and Columbia editable field reports from the master work-order sheet.</p>
+  <form method="post" action="{{url_for('admin_build_field_views')}}">
+    <button class="primary">Build Florence &amp; Columbia Views</button>
+  </form>
+</section>
+{% endblock %}

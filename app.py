@@ -176,10 +176,31 @@ def log_action(action: str, object_type: str = "", object_id: str = "", details:
         )
 
 
+def refresh_session_user() -> bool:
+    """Reload the current user's role from the database on every protected request."""
+    email = session.get("user")
+    if not email:
+        return False
+
+    with db() as connection:
+        user = connection.execute(
+            "SELECT email,display_name,role,active FROM users WHERE email=?",
+            (email,),
+        ).fetchone()
+
+    if not user or not user["active"]:
+        session.clear()
+        return False
+
+    session["display_name"] = user["display_name"]
+    session["role"] = user["role"]
+    return True
+
+
 def require_login(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not session.get("user"):
+        if not refresh_session_user():
             return redirect(url_for("login", next=request.path))
         return view(*args, **kwargs)
 
@@ -643,6 +664,26 @@ def customer_job_detail(project_id: str):
         billing=billing,
         attachments=attachments,
     )
+
+
+
+@app.route("/repair-admin")
+@require_login
+def repair_admin():
+    configured_admin = os.getenv("ADMIN_EMAIL", "thomas@firstdigitalsc.com").strip().lower()
+    current_email = session.get("user", "").strip().lower()
+    if not hmac.compare_digest(current_email, configured_admin):
+        abort(403)
+
+    with db() as connection:
+        connection.execute(
+            "UPDATE users SET role='admin', active=1 WHERE email=?",
+            (configured_admin,),
+        )
+
+    session["role"] = "admin"
+    flash("Administrator access repaired.", "success")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/admin/users", methods=["GET", "POST"])
