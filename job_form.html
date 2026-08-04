@@ -1,0 +1,22 @@
+{% extends 'base.html' %}{% block content %}
+<div class="page-head"><div><span class="eyebrow">SMALL PROJECTS</span><h1>Add Project</h1><p>Create a new Graycliff job. It will be written directly to Smartsheet.</p></div></div>
+<form method="post" class="panel form-grid" id="job-form">
+<label>Market<select name="market" required>{% for x in markets %}<option {% if form and form.get('market')==x %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+<label>Job Type<select name="job_type" id="job-type" required><option {% if not form or form.get('job_type','Standard')=='Standard' %}selected{% endif %}>Standard</option><option {% if form and form.get('job_type')=='Night Cut' %}selected{% endif %}>Night Cut</option></select></label>
+<label>Task Name<input name="task_name" value="{{form.get('task_name','') if form else ''}}" required></label>
+<label>Address<input name="address" value="{{form.get('address','') if form else ''}}"></label>
+<label>City<input name="city" value="{{form.get('city','') if form else ''}}"></label>
+<label id="crq-field" class="hidden-field">CRQ Number<input name="crq" id="crq-input" value="{{form.get('crq','') if form else ''}}"></label>
+<label>Due Date<input type="date" name="due_date" value="{{form.get('due_date','') if form else ''}}"></label>
+<label>Priority<select name="priority">{% for x in priorities %}<option {% if (form and form.get('priority')==x) or (not form and x=='Normal') %}selected{% endif %}>{{x}}</option>{% endfor %}</select></label>
+<label class="wide">Manager Notes<textarea name="manager_notes">{{form.get('manager_notes','') if form else ''}}</textarea></label>
+<div class="form-actions wide"><a class="button ghost" href="/jobs">Cancel</a><button>Create Project</button></div>
+</form>
+<script>
+(function(){
+ const type=document.getElementById('job-type'), field=document.getElementById('crq-field'), input=document.getElementById('crq-input');
+ function sync(){const night=type.value==='Night Cut'; field.classList.toggle('hidden-field',!night); input.required=night; if(!night) input.value='';}
+ type.addEventListener('change',sync); sync();
+})();
+</script>
+{% endblock %}
