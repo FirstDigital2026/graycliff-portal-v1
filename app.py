@@ -364,18 +364,25 @@ def build_due_priority(row: dict[str, Any]) -> str:
 def ensure_mobile_summary_columns(sheet_id: int) -> None:
     sheet = store.get_sheet(sheet_id, force=True)
     existing = {c["title"] for c in sheet.get("columns", [])}
-    needed = []
-    for title in ("Job Summary", "Location", "Due / Priority"):
-        if title not in existing:
-            needed.append(
+
+    # Smartsheet requires a consistent insertion index when adding multiple
+    # columns in one request. Add these individually so each can be placed
+    # directly after Project ID in the intended order.
+    for index, title in reversed(
+        list(enumerate(("Job Summary", "Location", "Due / Priority"), start=1))
+    ):
+        if title in existing:
+            continue
+        store.add_columns(
+            sheet_id,
+            [
                 {
                     "title": title,
                     "type": "TEXT_NUMBER",
-                    "index": 1 + len(needed),
+                    "index": index,
                 }
-            )
-    if needed:
-        store.add_columns(sheet_id, needed)
+            ],
+        )
 
 
 def mobile_sheet_definition(name: str) -> dict[str, Any]:
