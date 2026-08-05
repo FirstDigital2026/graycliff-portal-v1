@@ -228,3 +228,13 @@ Read/unread state is no longer used. The shared mailbox Inbox itself is the queu
 - Unsupported format moves to Manual Review.
 - Moving any email back to Inbox retries it, even if it is already read or was
   previously recorded in the database.
+
+
+## Import Failed handling
+
+There is no Manual Review folder.
+
+- Successful imports move to Imported.
+- Recognized messages that fail move to Import Failed.
+- Unsupported or unrecognized formats also move to Import Failed.
+- Outlook folder cleanup never deletes or changes the Smartsheet job.

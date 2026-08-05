@@ -621,7 +621,6 @@ def import_graycliff_mailbox() -> dict[str, Any]:
     token = graph_access_token()
     imported_folder = graph_ensure_mail_folder(token, "Imported")
     failed_folder = graph_ensure_mail_folder(token, "Import Failed")
-    manual_folder = graph_ensure_mail_folder(token, "Manual Review")
     messages = graph_list_recent_messages(token, top=40)
     existing = by_project(record_map(FIELD_SHEET_ID, force=True))
     stats = {"created": 0, "updated": 0, "ignored": 0, "failed": 0, "attachments": 0}
@@ -636,11 +635,10 @@ def import_graycliff_mailbox() -> dict[str, Any]:
         parsed = parse_recognized_ntp(message)
         if not parsed:
             stats["ignored"] += 1
-            _record_mail_result(message, result="manual-review")
+            _record_mail_result(message, result="failed-unrecognized-format")
             try:
-                graph_move_message(token, message_id, manual_folder)
+                graph_move_message(token, message_id, failed_folder)
             except Exception:
-                # Avoid rechecking the same unsupported email forever.
                 try:
                     graph_mark_message_read(token, message_id)
                 except Exception:
