@@ -132,11 +132,16 @@ def list_recent_messages(token: str, *, top: int = 30) -> list[dict[str, Any]]:
     query = urllib.parse.urlencode(
         {
             "$top": str(top),
+            "$filter": "isRead eq false",
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,receivedDateTime,body,bodyPreview,hasAttachments,internetMessageId",
+            "$select": "id,subject,receivedDateTime,body,bodyPreview,hasAttachments,internetMessageId,isRead",
         }
     )
-    result = _request("GET", f"{GRAPH_ROOT}/users/{user}/mailFolders/inbox/messages?{query}", token=token)
+    result = _request(
+        "GET",
+        f"{GRAPH_ROOT}/users/{user}/mailFolders/inbox/messages?{query}",
+        token=token,
+    )
     return result.get("value", []) if isinstance(result, dict) else []
 
 
@@ -392,6 +397,19 @@ def ensure_mail_folder(token: str, display_name: str) -> str:
     if not folder_id:
         raise GraphImportError(f"Unable to create mailbox folder {display_name}.")
     return str(folder_id)
+
+
+def mark_message_read(token: str, message_id: str) -> None:
+    user = urllib.parse.quote(mailbox())
+    mid = urllib.parse.quote(message_id, safe="")
+    payload = json.dumps({"isRead": True}).encode("utf-8")
+    _request(
+        "PATCH",
+        f"{GRAPH_ROOT}/users/{user}/messages/{mid}",
+        token=token,
+        body=payload,
+        headers={"Content-Type": "application/json"},
+    )
 
 
 def move_message(token: str, message_id: str, destination_folder_id: str) -> None:

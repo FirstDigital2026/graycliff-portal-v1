@@ -37,6 +37,7 @@ from graph_import import (
     list_recent_messages as graph_list_recent_messages,
     ensure_mail_folder as graph_ensure_mail_folder,
     move_message as graph_move_message,
+    mark_message_read as graph_mark_message_read,
     mailbox as graph_mailbox,
     parse_recognized_ntp,
     enrich_ntp_from_attachments,
@@ -619,19 +620,30 @@ def import_graycliff_mailbox() -> dict[str, Any]:
     token = graph_access_token()
     imported_folder = graph_ensure_mail_folder(token, "Imported")
     failed_folder = graph_ensure_mail_folder(token, "Import Failed")
+    manual_folder = graph_ensure_mail_folder(token, "Manual Review")
     messages = graph_list_recent_messages(token, top=40)
     existing = by_project(record_map(FIELD_SHEET_ID, force=True))
     stats = {"created": 0, "updated": 0, "ignored": 0, "failed": 0, "attachments": 0}
 
     for message in reversed(messages):
         message_id = str(message.get("id", ""))
-        if not message_id or _mail_already_processed(message_id):
+        if not message_id:
             continue
 
+        # Inbox + unread is the retry switch. A prior database record does not
+        # block an email that a manager moved back to Inbox and marked unread.
         parsed = parse_recognized_ntp(message)
         if not parsed:
-            # Unrecognized formats remain in Inbox for manual entry.
             stats["ignored"] += 1
+            _record_mail_result(message, result="manual-review")
+            try:
+                graph_move_message(token, message_id, manual_folder)
+            except Exception:
+                # Avoid rechecking the same unsupported email forever.
+                try:
+                    graph_mark_message_read(token, message_id)
+                except Exception:
+                    pass
             continue
 
         message_attachments = (
@@ -715,7 +727,10 @@ def import_graycliff_mailbox() -> dict[str, Any]:
             try:
                 graph_move_message(token, message_id, failed_folder)
             except Exception:
-                pass
+                try:
+                    graph_mark_message_read(token, message_id)
+                except Exception:
+                    pass
 
     if stats["created"] or stats["updated"]:
         sync_mobile_field_sheets()
@@ -724,7 +739,7 @@ def import_graycliff_mailbox() -> dict[str, Any]:
         "ok": True, "configured": True, **stats,
         "message": (
             f"Mailbox import complete: {stats['created']} job(s) created, {stats['updated']} revision(s) updated, "
-            f"{stats['failed']} failed email(s) moved to Import Failed, {stats['ignored']} unrecognized email(s) left in Inbox, "
+            f"{stats['failed']} failed email(s) moved to Import Failed, {stats['ignored']} unrecognized email(s) moved to Manual Review, "
             f"and {stats['attachments']} attachment(s) copied."
         ),
     }

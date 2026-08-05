@@ -204,3 +204,15 @@ Smartsheet row comments. Held and unapproved jobs are removed from technician sh
 Mailbox processing is one-way only. Outlook is an intake source, not the system
 of record. Deleting or moving an email in Outlook never deletes, archives, changes,
 or removes the Smartsheet work order or its copied attachments.
+
+
+## Unread-only import and explicit retry
+
+The importer now processes only unread messages in the shared mailbox Inbox.
+
+- Successful recognized jobs move to Imported.
+- Recognized jobs that fail move to Import Failed.
+- Unsupported formats move to Manual Review.
+- To retry any message, move it back to Inbox and mark it unread.
+- A prior imported_mail database record does not block an unread Inbox retry.
+- Outlook deletion or folder movement never deletes or changes the Smartsheet job.
