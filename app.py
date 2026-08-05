@@ -1158,6 +1158,15 @@ def dashboard():
 
     field_rows = record_map(FIELD_SHEET_ID)
     billing_rows = record_map(BILLING_SHEET_ID)
+    on_hold_jobs = [
+        r
+        for r in field_rows
+        if (
+            str(r.get("Status", "")).strip() in {"On Hold", "Missing Documents"}
+            or str(r.get("Office Review Status", "")).strip() == "Missing Documents"
+        )
+        and not bool(r.get("Archived"))
+    ]
     metrics = {
         "open": sum(
             str(r.get("Status", "")) not in {"Office Approved", "Closed"}
@@ -1165,17 +1174,14 @@ def dashboard():
             for r in field_rows
         ),
         "field_complete": sum(str(r.get("Status", "")) == "Field Complete" for r in field_rows),
-        "missing": sum(
-            str(r.get("Status", "")) == "Missing Documents"
-            or str(r.get("Office Review Status", "")) == "Missing Documents"
-            for r in field_rows
-        ),
+        "on_hold": len(on_hold_jobs),
         "ready_to_bill": sum(str(r.get("Billing Status", "")) == "Ready to Bill" for r in billing_rows),
         "invoiced": sum(str(r.get("Billing Status", "")) in {"Invoiced", "Sent"} for r in billing_rows),
     }
     return render_template(
         "dashboard.html",
         metrics=metrics,
+        on_hold_jobs=on_hold_jobs,
         mailbox_configured=graph_configured(),
         mailbox_address=graph_mailbox(),
     )
@@ -1248,7 +1254,15 @@ def admin_import_graycliff_mail():
 def office_work_orders():
     rows = record_map(FIELD_SHEET_ID)
     status = request.args.get("status", "").strip()
-    if status:
+    if status == "On Hold":
+        rows = [
+            row for row in rows
+            if (
+                str(row.get("Status", "")).strip() in {"On Hold", "Missing Documents"}
+                or str(row.get("Office Review Status", "")).strip() == "Missing Documents"
+            )
+        ]
+    elif status:
         rows = [row for row in rows if str(row.get("Status", "")) == status]
     rows.sort(key=lambda r: (str(r.get("Due Date", "9999-99-99")), str(r.get("Project ID", ""))))
     return render_template("office_work_orders.html", jobs=rows, selected_status=status)
@@ -1317,7 +1331,7 @@ def review_work_order(project_id: str):
         reason = request.form.get("hold_reason", "").strip()
         if reason:
             values["Manager Notes"] = reason
-        values.update({"Status": "Missing Documents", "Office Review Status": "Missing Documents"})
+        values.update({"Status": "On Hold", "Office Review Status": "Missing Documents"})
         message = "Job placed on hold and hidden from technicians."
     else:
         values.update({"Office Review Status": "Not Ready"})

@@ -5,7 +5,7 @@
   <form method="get" class="inline-filter">
     <select name="status" onchange="this.form.submit()">
       <option value="">All statuses</option>
-      {% for status in ['Unassigned','Assigned','In Progress','Field Complete','Missing Documents','Office Approved','Closed'] %}
+      {% for status in ['Unassigned','Assigned','In Progress','Field Complete','On Hold','Office Approved','Closed'] %}
         <option value="{{status}}" {% if selected_status==status %}selected{% endif %}>{{status}}</option>
       {% endfor %}
     </select>
@@ -21,7 +21,7 @@
   <td>{{job.get('Market','')}}</td>
   <td>{{job.get('Task Name','')}}</td>
   <td>{{job.get('Assigned Technician','')}}</td>
-  <td><span class="status">{{job.get('Status','')}}</span></td>
+  <td><span class="status">{% if job.get('Status') == 'Missing Documents' or job.get('Office Review Status') == 'Missing Documents' %}On Hold{% else %}{{job.get('Status','')}}{% endif %}</span></td>
   <td>{{job.get('Due Date','')}}</td>
   <td>{{'Field ✓' if job.get('Field File Complete') else 'Field —'}} · {{'Photos ✓' if job.get('Required Photos Complete') else 'Photos —'}}</td>
 </tr>

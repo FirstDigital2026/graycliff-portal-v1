@@ -6,10 +6,31 @@
 <div class="metric-grid">
   <a class="metric" href="{{url_for('office_work_orders')}}"><strong>{{metrics.open}}</strong><span>Open Work Orders</span></a>
   <a class="metric" href="{{url_for('office_work_orders',status='Field Complete')}}"><strong>{{metrics.field_complete}}</strong><span>Field Complete</span></a>
-  <a class="metric" href="{{url_for('office_work_orders',status='Missing Documents')}}"><strong>{{metrics.missing}}</strong><span>Missing Documents</span></a>
+  <a class="metric" href="{{url_for('office_work_orders',status='On Hold')}}"><strong>{{metrics.on_hold}}</strong><span>On Hold</span></a>
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.ready_to_bill}}</strong><span>Ready to Bill</span></a>
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
 </div>
+
+{% if on_hold_jobs %}
+<section class="panel hold-panel">
+  <h2>Jobs on hold</h2>
+  <p>These jobs are blocked from technicians until the hold is cleared and the job is released.</p>
+  <div class="hold-list">
+    {% for job in on_hold_jobs %}
+    <a class="hold-item" href="{{ url_for('office_work_order_detail', project_id=job.get('Project ID')) }}">
+      <div class="hold-item-top">
+        <strong>{{ job.get('Project ID') }}</strong>
+        <span>{{ job.get('Task Name') or job.get('Address') }}</span>
+      </div>
+      <div class="hold-reason">
+        {{ job.get('Manager Notes') or 'No hold reason entered.' }}
+      </div>
+    </a>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
 <section class="panel">
   <h2>Smartsheet mobile field sheets</h2>
   <p>Technicians work from normal Smartsheet sheets with Mobile View. The cloud service keeps Florence and Columbia technician sheets synchronized with the master sheet and builds mobile-friendly Job Summary, Location, and Due / Priority fields.</p>

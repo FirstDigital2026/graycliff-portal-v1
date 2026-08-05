@@ -245,3 +245,13 @@ There is no Manual Review folder.
 Attachment links now resolve the current file from the Smartsheet row by filename
 before downloading. This avoids 404 errors caused by stale Smartsheet attachment IDs
 after rows or files are replaced, copied, or refreshed.
+
+
+## On-hold dashboard
+
+The dashboard now has a dedicated On Hold metric instead of Missing Documents.
+Held jobs are listed directly on the dashboard with the manager-entered hold
+reason. Held jobs remain hidden from technicians.
+
+New holds use Status = On Hold. Legacy Missing Documents rows are still treated
+and displayed as On Hold.
