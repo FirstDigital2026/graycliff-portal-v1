@@ -8,8 +8,12 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import io
+import zipfile
 from dataclasses import dataclass
 from typing import Any
+
+from pypdf import PdfReader
 
 GRAPH_ROOT = "https://graph.microsoft.com/v1.0"
 TOKEN_ROOT = "https://login.microsoftonline.com"
@@ -21,7 +25,7 @@ NTP_SUBJECT_RE = re.compile(
 
 ADDRESS_PATTERNS = [
     re.compile(r"(?:work\s+location|job\s+location|service\s+address|address)\s*[:\-]\s*([^\r\n<]{5,120})", re.I),
-    re.compile(r"\b(\d{1,6}\s+[A-Za-z0-9.'#\- ]{3,70}\s(?:Rd|Road|St|Street|Ave|Avenue|Ln|Lane|Dr|Drive|Blvd|Boulevard|Hwy|Highway|Ct|Court|Cir|Circle|Way|Pkwy|Parkway)\b[^\r\n<]{0,60})", re.I),
+    re.compile(r"\b(\d{1,6}\s+[A-Za-z0-9.'#\- ]{3,70}\s(?:Rd|Road|St|Street|Ave|Avenue|Ln|Lane|Dr|Drive|Blvd|Boulevard|Hwy|Highway|Ct|Court|Cir|Circle|Way|Pkwy|Parkway))\b", re.I),
 ]
 DUE_PATTERNS = [
     re.compile(r"(?:estimated\s+completion|completion\s+date|due\s+date)\s*[:\-]\s*(\d{1,2}/\d{1,2}/\d{2,4})", re.I),
@@ -51,8 +55,10 @@ class ParsedNtp:
     subject: str
     address: str = ""
     city: str = ""
+    state_zip: str = ""
     due_date: str = ""
     market: str = ""
+    customer_name: str = ""
 
 
 def _request(
@@ -203,6 +209,131 @@ def _market_for(city: str, address: str) -> str:
     if any(re.search(rf"\b{re.escape(name)}\b", haystack) for name in COLUMBIA_CITIES):
         return "Columbia"
     return ""
+
+
+
+def _pdf_text(data: bytes) -> str:
+    try:
+        reader = PdfReader(io.BytesIO(data))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+    except Exception:
+        return ""
+
+
+def _candidate_document_texts(attachments: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    docs: list[tuple[str, str]] = []
+    for item in attachments:
+        decoded = attachment_bytes(item)
+        if not decoded:
+            continue
+        filename, mime_type, data = decoded
+        lower = filename.lower()
+        if lower.endswith(".pdf") or mime_type == "application/pdf":
+            text = _pdf_text(data)
+            if text:
+                docs.append((filename, text))
+        elif lower.endswith(".zip") or mime_type in {"application/zip", "application/x-zip-compressed"}:
+            try:
+                with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                    for member in archive.namelist():
+                        if member.lower().endswith(".pdf"):
+                            text = _pdf_text(archive.read(member))
+                            if text:
+                                docs.append((member, text))
+            except Exception:
+                continue
+    return docs
+
+
+def _extract_work_order_document(
+    docs: list[tuple[str, str]], expected_work_order: str
+) -> dict[str, str]:
+    best = None
+    for filename, raw_text in docs:
+        text = raw_text.replace("\r", "\n")
+        compact = re.sub(r"[ \t]+", " ", text)
+
+        wo_match = re.search(r"Work\s+Order\s*#?\s*:\s*(\d+)", compact, re.I)
+        work_order = wo_match.group(1) if wo_match else ""
+        if work_order and expected_work_order and work_order != expected_work_order:
+            continue
+
+        prism_match = re.search(r"PRISM\s+ID\s*:\s*(\d+)", compact, re.I)
+        due_match = re.search(r"Est\.?\s*Completion\s*:\s*(\d{1,2}/\d{1,2}/\d{2,4})", compact, re.I)
+
+        address = ""
+        city = ""
+        state_zip = ""
+
+        # Formal work-order PDF.
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines() if line.strip()]
+        for i, line in enumerate(lines):
+            if re.fullmatch(r"\d{1,6}\s+.+\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|LN|LANE|DR|DRIVE|BLVD|BOULEVARD|HWY|HIGHWAY|CT|COURT|CIR|CIRCLE|WAY|PKWY|PARKWAY)", line, re.I):
+                address = line
+                for follow in lines[i + 1:i + 6]:
+                    city_match = re.fullmatch(r"([A-Za-z .'-]+),\s*SC\s+(\d{5})", follow, re.I)
+                    if city_match:
+                        city = city_match.group(1).strip().title()
+                        state_zip = f"SC {city_match.group(2)}"
+                        break
+                break
+
+        # FWM fallback.
+        if not address:
+            address_match = re.search(r"Address\s*:\s*([^\n]{5,120})", text, re.I)
+            if address_match:
+                address = re.sub(r"\s+", " ", address_match.group(1)).strip()
+        if not city:
+            city_match = re.search(r"City/State/Zip\s*:\s*([A-Za-z .'-]+),\s*SC\s+(\d{5})", text, re.I)
+            if city_match:
+                city = city_match.group(1).strip().title()
+                state_zip = f"SC {city_match.group(2)}"
+
+        customer_name = ""
+        for i, line in enumerate(lines):
+            if line.lower() == "job":
+                for candidate in lines[i + 1:i + 5]:
+                    if "," in candidate and not re.search(r"\d", candidate):
+                        customer_name = candidate.title()
+                        break
+                if customer_name:
+                    break
+
+        parsed = {
+            "work_order": work_order or expected_work_order,
+            "prism": prism_match.group(1) if prism_match else "",
+            "due_date": _normalize_date(due_match.group(1)) if due_match else "",
+            "address": address.title() if address.isupper() else address,
+            "city": city,
+            "state_zip": state_zip,
+            "customer_name": customer_name,
+        }
+        score = sum(bool(parsed[k]) for k in ("work_order", "prism", "due_date", "address", "city"))
+        if re.search(r"WO_\d+_\d+\.pdf$", filename, re.I):
+            score += 5
+        elif "fwm" not in filename.lower():
+            score += 1
+        if best is None or score > best[0]:
+            best = (score, parsed)
+    return best[1] if best else {}
+
+
+def enrich_ntp_from_attachments(
+    parsed: ParsedNtp, attachments: list[dict[str, Any]]
+) -> ParsedNtp:
+    details = _extract_work_order_document(
+        _candidate_document_texts(attachments), parsed.work_order
+    )
+    if not details:
+        return parsed
+    parsed.prism = details.get("prism") or parsed.prism
+    parsed.address = details.get("address") or parsed.address
+    parsed.city = details.get("city") or parsed.city
+    parsed.state_zip = details.get("state_zip") or parsed.state_zip
+    parsed.due_date = details.get("due_date") or parsed.due_date
+    parsed.customer_name = details.get("customer_name") or parsed.customer_name
+    parsed.market = _market_for(parsed.city, parsed.address)
+    return parsed
 
 
 def parse_recognized_ntp(message: dict[str, Any]) -> ParsedNtp | None:

@@ -38,6 +38,7 @@ from graph_import import (
     move_message as graph_move_message,
     mailbox as graph_mailbox,
     parse_recognized_ntp,
+    enrich_ntp_from_attachments,
 )
 
 APP_NAME = "Graycliff Project Portal"
@@ -610,47 +611,70 @@ def import_graycliff_mailbox() -> dict[str, Any]:
             stats["ignored"] += 1
             continue
 
+        message_attachments = (
+            graph_list_attachments(token, message_id)
+            if message.get("hasAttachments")
+            else []
+        )
+        parsed = enrich_ntp_from_attachments(parsed, message_attachments)
+
         project_id = parsed.work_order
         try:
-            values = {
+            task_name = parsed.address or parsed.customer_name or f"Graycliff Work Order {project_id}"
+            source_values = {
                 "Market": parsed.market,
-                "Task Name": parsed.address or f"Graycliff Work Order {project_id}",
+                "Task Name": task_name,
                 "Address": parsed.address,
                 "City": parsed.city,
                 "Job Type": "Standard",
                 "Due Date": parsed.due_date,
                 "Priority": "Normal",
-                "Status": "Unassigned",
-                "Customer Notes": f"PRISM {parsed.prism}",
+                "Customer Notes": f"PRISM {parsed.prism}" if parsed.prism else "",
             }
 
             if project_id in existing:
                 row = existing[project_id]
-                update_values = {key: value for key, value in values.items() if value and row.get(key, "") != value}
+                # Revisions update source data but never reset assignment or workflow status.
+                update_values = {
+                    key: value
+                    for key, value in source_values.items()
+                    if value and row.get(key, "") != value
+                }
                 if update_values:
                     store.update_row(FIELD_SHEET_ID, int(row["_row_id"]), update_values)
                 target_row_id = int(row["_row_id"])
                 stats["updated"] += 1
                 result_name = "updated-revision"
             else:
-                created = create_field_job({"Project ID": project_id, **values})
+                created = create_field_job(
+                    {
+                        "Project ID": project_id,
+                        **source_values,
+                        "Status": "Unassigned",
+                    }
+                )
                 target_row_id = int(created["row"].get("id"))
                 stats["created"] += 1
                 result_name = "created"
                 existing = by_project(record_map(FIELD_SHEET_ID, force=True))
 
             current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
-            if message.get("hasAttachments"):
-                for item in graph_list_attachments(token, message_id):
-                    decoded = graph_attachment_bytes(item)
-                    if not decoded:
-                        continue
-                    filename, mime_type, data = decoded
-                    if filename in current_names:
-                        continue
-                    store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=filename, mime_type=mime_type, data=data)
-                    current_names.add(filename)
-                    stats["attachments"] += 1
+            for item in message_attachments:
+                decoded = graph_attachment_bytes(item)
+                if not decoded:
+                    continue
+                filename, mime_type, data = decoded
+                if filename in current_names:
+                    continue
+                store.attach_file_to_row(
+                    FIELD_SHEET_ID,
+                    target_row_id,
+                    filename=filename,
+                    mime_type=mime_type,
+                    data=data,
+                )
+                current_names.add(filename)
+                stats["attachments"] += 1
 
             eml_name = f"NTP-{project_id}-{message_id[-8:]}.eml"
             if eml_name not in current_names:

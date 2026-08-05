@@ -168,3 +168,12 @@ Import rules:
 - The emergency `/repair-admin` route has been removed.
 - Mobile-sheet build actions are admin-only.
 - Sync Now now includes technician contacts, mobile sheets, billing, and mailbox import.
+
+
+## Correct work-order package parsing
+
+The importer now opens attached ZIP packages and reads the formal WO PDF for the
+work-order number, PRISM ID, job address, city, and estimated completion date.
+It does not import PO numbers, PO amounts, rates, quantities, or any dollar values.
+Forwarded subject text is no longer used as Task Name. Revisions preserve status
+and assignment.
