@@ -320,3 +320,10 @@ When duplicates already exist, the portal registers and reuses the oldest sheet.
 After deployment, click **Lock Portal to Original Document Sheets** once on the
 dashboard, then delete the newer duplicate Field Documents and Billing Documents
 sheets in Smartsheet.
+
+
+## Document registry 500 fix
+
+The application already used a `portal_settings(key, value)` table. The prior
+registry build incorrectly queried different column names, causing the work-order
+page to return HTTP 500. The registry now uses the existing schema correctly.

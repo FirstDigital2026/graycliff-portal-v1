@@ -457,25 +457,20 @@ def document_sheet_definition(name: str) -> dict[str, Any]:
 def _get_portal_setting(key: str) -> str:
     with db() as connection:
         row = connection.execute(
-            "SELECT setting_value FROM portal_settings WHERE setting_key=?",
+            "SELECT value FROM portal_settings WHERE key=?",
             (key,),
         ).fetchone()
-    return str(row["setting_value"]) if row else ""
+    return str(row["value"]) if row else ""
 
 
 def _set_portal_setting(key: str, value: str) -> None:
     with db() as connection:
         connection.execute(
             """
-            INSERT OR REPLACE INTO portal_settings(
-                setting_key, setting_value, updated_at
-            ) VALUES(?,?,?)
+            INSERT OR REPLACE INTO portal_settings(key, value)
+            VALUES(?,?)
             """,
-            (
-                key,
-                value,
-                datetime.now().isoformat(timespec="seconds"),
-            ),
+            (key, value),
         )
 
 
