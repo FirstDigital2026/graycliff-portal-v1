@@ -144,6 +144,15 @@ def init_db() -> None:
                 selected_by TEXT,
                 PRIMARY KEY(project_id, filename)
             );
+
+            CREATE TABLE IF NOT EXISTS billing_document_selection (
+                project_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                selected_at TEXT NOT NULL,
+                selected_by TEXT,
+                source TEXT,
+                PRIMARY KEY(project_id, filename)
+            );
             """
         )
 
@@ -522,6 +531,86 @@ def unselect_field_document(project_id: str, filename: str) -> None:
             "DELETE FROM field_document_selection WHERE project_id=? AND filename=?",
             (project_id, filename),
         )
+
+
+def selected_billing_document_names(project_id: str) -> set[str]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT filename FROM billing_document_selection WHERE project_id=?",
+            (project_id,),
+        ).fetchall()
+    return {str(row["filename"]) for row in rows}
+
+
+def select_billing_document(
+    project_id: str,
+    filename: str,
+    *,
+    source: str = "office",
+) -> None:
+    with db() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO billing_document_selection(
+                project_id, filename, selected_at, selected_by, source
+            ) VALUES(?,?,?,?,?)
+            """,
+            (
+                project_id,
+                filename,
+                datetime.now().isoformat(timespec="seconds"),
+                session.get("user_email", "system"),
+                source,
+            ),
+        )
+
+
+def unselect_billing_document(project_id: str, filename: str) -> None:
+    with db() as connection:
+        connection.execute(
+            "DELETE FROM billing_document_selection WHERE project_id=? AND filename=?",
+            (project_id, filename),
+        )
+
+
+def _copy_mobile_attachments_to_master(
+    project_id: str,
+    mobile_sheet_id: int,
+    mobile_row_id: int,
+    master_sheet_id: int,
+    master_row_id: int,
+) -> int:
+    copied = 0
+    source_items = store.list_row_attachments(mobile_sheet_id, mobile_row_id)
+    target_names = _attachment_names(master_sheet_id, master_row_id)
+
+    for item in source_items:
+        name = str(item.get("name", "")).strip()
+        attachment_id = item.get("id")
+        if not name or not attachment_id:
+            continue
+
+        # Anything a technician attaches is part of the billing package.
+        select_billing_document(project_id, name, source="technician")
+
+        if name in target_names:
+            continue
+
+        data, filename, mime = store.download_attachment(
+            mobile_sheet_id,
+            int(attachment_id),
+        )
+        store.attach_file_to_row(
+            master_sheet_id,
+            master_row_id,
+            filename=filename,
+            mime_type=mime,
+            data=data,
+        )
+        target_names.add(filename)
+        copied += 1
+
+    return copied
 
 
 def _attachment_names(sheet_id: int, row_id: int) -> set[str]:
@@ -947,7 +1036,8 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             stats["updated_mobile_rows"] += 1
 
         # Attachments flow both directions and are de-duplicated by filename.
-        stats["copied_attachments"] += _copy_new_attachments(
+        stats["copied_attachments"] += _copy_mobile_attachments_to_master(
+            project_id,
             target_id,
             int(mobile["_row_id"]),
             FIELD_SHEET_ID,
@@ -1407,7 +1497,7 @@ def review_work_order(project_id: str):
             flash("Cannot release to field. Missing: " + ", ".join(missing) + ".", "error")
             return redirect(url_for("office_work_order_detail", project_id=project_id))
         values.update({"Status": "Assigned", "Office Review Status": "Approved"})
-        message = "Job approved and released to the technician."
+        message = "Job approved, field documents synced, and released to the technician."
     elif action == "hold":
         reason = request.form.get("hold_reason", "").strip()
         if reason:
@@ -1547,7 +1637,83 @@ def billing_detail(project_id: str):
     attachments = (
         store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"]) if job else []
     )
-    return render_template("billing_detail.html", billing=row, job=job, attachments=attachments, field_sheet_id=FIELD_SHEET_ID)
+    selected_names = selected_billing_document_names(project_id)
+    billing_documents = [
+        item for item in attachments
+        if str(item.get("name", "")).strip() in selected_names
+    ]
+    available_documents = [
+        item for item in attachments
+        if str(item.get("name", "")).strip() not in selected_names
+    ]
+    return render_template(
+        "billing_detail.html",
+        billing=row,
+        job=job,
+        billing_documents=billing_documents,
+        available_documents=available_documents,
+        field_sheet_id=FIELD_SHEET_ID,
+    )
+
+
+
+@app.route("/office/billing/<project_id>/documents/select", methods=["POST"])
+@roles("admin", "office")
+def select_billing_document_route(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
+    filename = request.form.get("filename", "").strip()
+    available = {
+        str(item.get("name", "")).strip()
+        for item in store.list_row_attachments(FIELD_SHEET_ID, int(job["_row_id"]))
+    }
+    if not filename or filename not in available:
+        flash("That job document is no longer available.", "error")
+    else:
+        select_billing_document(project_id, filename, source="office")
+        flash(f"{filename} added to Billing Documents.", "success")
+    return redirect(url_for("billing_detail", project_id=project_id))
+
+
+@app.route("/office/billing/<project_id>/documents/unselect", methods=["POST"])
+@roles("admin", "office")
+def unselect_billing_document_route(project_id: str):
+    filename = request.form.get("filename", "").strip()
+    if filename:
+        unselect_billing_document(project_id, filename)
+        flash(f"{filename} removed from Billing Documents.", "success")
+    return redirect(url_for("billing_detail", project_id=project_id))
+
+
+@app.route("/office/billing/<project_id>/documents/upload", methods=["POST"])
+@roles("admin", "office")
+def upload_billing_document(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
+    added = 0
+    for uploaded in request.files.getlist("documents"):
+        if not uploaded or not uploaded.filename:
+            continue
+        filename = secure_filename(uploaded.filename)
+        data = uploaded.read()
+        if not data:
+            continue
+        store.attach_file_to_row(
+            FIELD_SHEET_ID,
+            int(job["_row_id"]),
+            filename=filename,
+            mime_type=uploaded.mimetype or "application/octet-stream",
+            data=data,
+        )
+        select_billing_document(project_id, filename, source="billing-upload")
+        added += 1
+
+    flash(f"{added} billing document(s) uploaded.", "success")
+    return redirect(url_for("billing_detail", project_id=project_id))
 
 
 @app.route("/attachments/<int:sheet_id>/<int:row_id>/<path:filename>")

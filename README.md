@@ -279,3 +279,18 @@ technician needs. Field Documents can be removed without deleting the original
 master attachment. Documents uploaded through Add Field Documents are selected
 automatically. Mobile sync copies only the selected Field Documents and removes
 documents that the manager later removes from field release.
+
+
+## Automatic release and billing documents
+
+Approve & Release to Field now immediately runs the mobile sync. No separate
+Build & Sync click is required.
+
+Billing Documents are separate from Field Documents:
+
+- Technician-added attachments are copied back to the master job and selected
+  for Billing Documents automatically.
+- Office staff can add any job document to Billing Documents.
+- Office staff can upload billing-only documents.
+- Removing a Billing Document does not remove it from Field Documents or delete
+  the original master attachment.
