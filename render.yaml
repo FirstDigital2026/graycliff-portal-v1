@@ -27,3 +27,12 @@ services:
         value: "true"
       - key: TECH_SYNC_MINUTES
         value: "15"
+
+      - key: GRAYCLIFF_JOBS_MAILBOX
+        value: graycliffjobs@firstdigitalsc.com
+      - key: MS_TENANT_ID
+        sync: false
+      - key: MS_CLIENT_ID
+        sync: false
+      - key: MS_CLIENT_SECRET
+        sync: false

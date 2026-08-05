@@ -14,3 +14,9 @@ button,.primary,.secondary,.danger{display:inline-block;border-radius:8px;paddin
 .login-shell{min-height:70vh;display:grid;place-items:center}.login-card{width:min(440px,100%);background:#fff;border:1px solid var(--line);border-radius:14px;padding:34px;box-shadow:0 12px 40px rgba(20,50,75,.08)}.login-card h1{color:var(--navy);margin:6px 0}.login-card p{color:var(--muted);margin:0 0 24px}.inline-filter select{min-width:190px}
 @media(max-width:1000px){.metric-grid{grid-template-columns:repeat(2,1fr)}.two-col{grid-template-columns:1fr}.site-header{align-items:flex-start;gap:14px;flex-direction:column}.site-header nav{flex-wrap:wrap}.page{padding:20px}.brand img{width:190px}.brand span{display:none}}
 @media(max-width:600px){.metric-grid{grid-template-columns:1fr}.form-grid,.detail-grid{grid-template-columns:1fr}.wide{grid-column:auto}.page-head{flex-direction:column}}
+
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+.form-grid label{display:flex;flex-direction:column;gap:6px;font-weight:700}
+.form-grid input,.form-grid select,.form-grid textarea{padding:11px;border:1px solid #cbd7df;border-radius:7px;font:inherit}
+.form-grid .full{grid-column:1/-1}
+@media(max-width:760px){.form-grid{grid-template-columns:1fr}}

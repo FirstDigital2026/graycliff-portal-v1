@@ -17,6 +17,7 @@
     {% if role in ['admin','office'] %}
       <a href="{{ url_for('dashboard') }}">Dashboard</a>
       <a href="{{ url_for('office_work_orders') }}">Work Review</a>
+      <a href="{{ url_for('create_work_order') }}">Create Job</a>
       <a href="{{ url_for('billing_queue') }}">Billing</a>
     {% endif %}
     {% if role in ['graycliff','admin'] %}

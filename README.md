@@ -131,3 +131,40 @@ Recommended Mobile View fields:
 9. Date Field Completed
 
 Project ID remains the card title. Comments and attachments remain available from the card icons.
+
+
+## Graycliff dedicated mailbox import
+
+The portal supports app-only Microsoft Graph access to:
+
+`graycliffjobs@firstdigitalsc.com`
+
+Required Render secrets:
+
+- `MS_TENANT_ID`
+- `MS_CLIENT_ID`
+- `MS_CLIENT_SECRET`
+- `GRAYCLIFF_JOBS_MAILBOX=graycliffjobs@firstdigitalsc.com`
+
+Import rules:
+
+- Only subjects matching `PO Number for NTP <work order> PRISM <number> Created/Revised` are auto-created.
+- Work Order Number becomes Project ID.
+- PO number and all dollar amounts are ignored.
+- Revisions update the existing Work Order Number.
+- Unrecognized email is recorded as ignored and remains available for manual entry.
+- Original attachments and an EML copy are attached to the Smartsheet row.
+- If market cannot be inferred, the job is created but will not enter a technician sheet until office staff selects Florence or Columbia.
+
+## Automatic field dates
+
+- Status `In Progress` stamps Date Started once.
+- Status `Field Complete` stamps Date Field Completed once.
+- Field Complete also stamps Date Started when it was missing.
+- Technicians do not manually enter either date.
+
+## Security cleanup
+
+- The emergency `/repair-admin` route has been removed.
+- Mobile-sheet build actions are admin-only.
+- Sync Now now includes technician contacts, mobile sheets, billing, and mailbox import.

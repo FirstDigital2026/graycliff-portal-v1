@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Create Job · {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">FIRST DIGITAL OFFICE</span><h1>Create Graycliff Job</h1></div>
+</div>
+<section class="panel">
+<form method="post" class="form-grid">
+  <label>Job / Work Order Number
+    <input name="project_id" placeholder="Leave blank to generate GC-YYYYMMDD-####">
+  </label>
+  <label>Market
+    <select name="market" required>
+      <option value="">Select market</option>
+      <option>Florence</option>
+      <option>Columbia</option>
+    </select>
+  </label>
+  <label>Task Name
+    <input name="task_name" required>
+  </label>
+  <label>Job Type
+    <select name="job_type">
+      <option>Standard</option>
+      <option>Night Cut</option>
+    </select>
+  </label>
+  <label>Address
+    <input name="address">
+  </label>
+  <label>City
+    <input name="city">
+  </label>
+  <label>Due Date
+    <input name="due_date" type="date">
+  </label>
+  <label>Priority
+    <select name="priority">
+      <option>Normal</option>
+      <option>High</option>
+      <option>Urgent</option>
+      <option>Low</option>
+    </select>
+  </label>
+  <label>Assigned Technician
+    <select name="assigned_technician">
+      <option value="">Unassigned</option>
+      {% for tech in technicians %}
+      <option value="{{ tech.email }}">{{ tech.name }}{% if tech.market %} · {{ tech.market }}{% endif %}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>CRQ Number
+    <input name="crq_number">
+  </label>
+  <label class="full">Customer Notes
+    <textarea name="customer_notes" rows="4"></textarea>
+  </label>
+  <div class="full"><button class="primary">Create Job</button></div>
+</form>
+</section>
+{% endblock %}

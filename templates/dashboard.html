@@ -18,3 +18,21 @@
   </form>
 </section>
 {% endblock %}
+<section class="panel">
+  <h2>Graycliff job mailbox</h2>
+  <p>
+    Dedicated mailbox: <strong>{{ mailbox_address }}</strong><br>
+    Status:
+    {% if mailbox_configured %}
+      <strong>Connected configuration present</strong>
+    {% else %}
+      <strong>Waiting for Microsoft app credentials in Render</strong>
+    {% endif %}
+  </p>
+  <p>Only recognized Graycliff NTP emails are created automatically. PO numbers and dollar amounts are never written into the job workflow. Unrecognized emails stay in the mailbox for manual entry.</p>
+  {% if role == 'admin' %}
+  <form method="post" action="{{ url_for('admin_import_graycliff_mail') }}">
+    <button class="primary">Import Graycliff Jobs Now</button>
+  </form>
+  {% endif %}
+</section>

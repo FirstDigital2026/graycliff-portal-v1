@@ -5,7 +5,7 @@ import os
 import secrets
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -26,6 +26,17 @@ from flask import (
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from smartsheet_api import SmartsheetClient, SmartsheetError, rows_as_records
+from graph_import import (
+    GraphImportError,
+    access_token as graph_access_token,
+    attachment_bytes as graph_attachment_bytes,
+    configured as graph_configured,
+    get_message_mime,
+    list_attachments as graph_list_attachments,
+    list_recent_messages as graph_list_recent_messages,
+    mailbox as graph_mailbox,
+    parse_recognized_ntp,
+)
 
 APP_NAME = "Graycliff Project Portal"
 
@@ -50,7 +61,6 @@ MOBILE_COLUMNS = [
     ("Status", "PICKLIST", False),
     ("Work Performed", "TEXT_NUMBER", False),
     ("Field File Complete", "CHECKBOX", False),
-    ("Required Photos Complete", "CHECKBOX", False),
     ("Date Field Completed", "DATE", False),
     ("Date Started", "DATE", False),
     ("Master Row ID", "TEXT_NUMBER", False),
@@ -62,8 +72,7 @@ MANAGER_TO_MOBILE_FIELDS = [
 ]
 
 TECH_TO_MASTER_FIELDS = [
-    "Status", "Date Started", "Date Field Completed", "Work Performed",
-    "Field File Complete", "Required Photos Complete",
+    "Status", "Work Performed", "Field File Complete",
 ]
 
 DATA_PATH = Path(os.getenv("DATA_PATH", "/tmp/graycliff.db"))
@@ -111,6 +120,15 @@ def init_db() -> None:
                 object_id TEXT,
                 details TEXT,
                 created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS imported_mail (
+                message_id TEXT PRIMARY KEY,
+                internet_message_id TEXT,
+                subject TEXT NOT NULL,
+                project_id TEXT,
+                result TEXT NOT NULL,
+                imported_at TEXT NOT NULL
             );
             """
         )
@@ -471,6 +489,214 @@ def _copy_new_attachments(
     return copied
 
 
+
+def _today() -> str:
+    return date.today().isoformat()
+
+
+def _stamp_status_dates(
+    master: dict[str, Any],
+    mobile: dict[str, Any],
+    master_updates: dict[str, Any],
+    mobile_updates: dict[str, Any],
+) -> None:
+    new_status = str(master_updates.get("Status", mobile.get("Status", master.get("Status", "")))).strip()
+
+    started = str(master.get("Date Started", "")).strip()
+    completed = str(master.get("Date Field Completed", "")).strip()
+
+    if new_status in {"In Progress", "Field Complete"} and not started:
+        started = _today()
+        master_updates["Date Started"] = started
+        mobile_updates["Date Started"] = started
+
+    if new_status == "Field Complete" and not completed:
+        completed = _today()
+        master_updates["Date Field Completed"] = completed
+        mobile_updates["Date Field Completed"] = completed
+
+
+def _mail_already_processed(message_id: str) -> bool:
+    with db() as connection:
+        return connection.execute(
+            "SELECT 1 FROM imported_mail WHERE message_id=?",
+            (message_id,),
+        ).fetchone() is not None
+
+
+def _record_mail_result(
+    message: dict[str, Any],
+    *,
+    project_id: str = "",
+    result: str,
+) -> None:
+    with db() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO imported_mail(
+                message_id,internet_message_id,subject,project_id,result,imported_at
+            ) VALUES(?,?,?,?,?,?)
+            """,
+            (
+                str(message.get("id", "")),
+                str(message.get("internetMessageId", "")),
+                str(message.get("subject", "")),
+                project_id,
+                result,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+
+
+def _next_manual_project_id() -> str:
+    prefix = f"GC-{datetime.now():%Y%m%d}-"
+    existing = set(by_project(record_map(FIELD_SHEET_ID, force=True)))
+    with db() as connection:
+        count = connection.execute(
+            "SELECT COUNT(*) AS total FROM imported_mail WHERE project_id LIKE ?",
+            (prefix + "%",),
+        ).fetchone()["total"]
+    number = int(count) + 1
+    while f"{prefix}{number:04d}" in existing:
+        number += 1
+    return f"{prefix}{number:04d}"
+
+
+def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
+    project_id = str(values.get("Project ID", "")).strip() or _next_manual_project_id()
+    existing = by_project(record_map(FIELD_SHEET_ID, force=True))
+    if project_id in existing:
+        raise ValueError(f"Job {project_id} already exists.")
+
+    clean = {
+        "Project ID": project_id,
+        "Market": str(values.get("Market", "")).strip(),
+        "Task Name": str(values.get("Task Name", "")).strip(),
+        "Address": str(values.get("Address", "")).strip(),
+        "City": str(values.get("City", "")).strip(),
+        "Job Type": str(values.get("Job Type", "Standard")).strip() or "Standard",
+        "CRQ Number": str(values.get("CRQ Number", "")).strip(),
+        "Due Date": str(values.get("Due Date", "")).strip(),
+        "Assigned Technician": values.get("Assigned Technician", ""),
+        "Priority": str(values.get("Priority", "Normal")).strip() or "Normal",
+        "Status": str(values.get("Status", "Unassigned")).strip() or "Unassigned",
+        "Customer Notes": str(values.get("Customer Notes", "")).strip(),
+    }
+    row = store.add_row(FIELD_SHEET_ID, clean)
+    return {"project_id": project_id, "row": row, "values": clean}
+
+
+def import_graycliff_mailbox() -> dict[str, Any]:
+    if not graph_configured():
+        return {
+            "ok": False,
+            "configured": False,
+            "message": "Graycliff mailbox connection is not configured in Render.",
+            "created": 0,
+            "updated": 0,
+            "ignored": 0,
+        }
+
+    token = graph_access_token()
+    messages = graph_list_recent_messages(token, top=40)
+    existing = by_project(record_map(FIELD_SHEET_ID, force=True))
+    stats = {"created": 0, "updated": 0, "ignored": 0, "attachments": 0}
+
+    # Process oldest first so revisions encountered later can update the same row.
+    for message in reversed(messages):
+        message_id = str(message.get("id", ""))
+        if not message_id or _mail_already_processed(message_id):
+            continue
+
+        parsed = parse_recognized_ntp(message)
+        if not parsed:
+            # Unrecognized mail stays in the mailbox for manual entry.
+            stats["ignored"] += 1
+            _record_mail_result(message, result="ignored-unrecognized")
+            continue
+
+        project_id = parsed.work_order
+        values = {
+            "Market": parsed.market,
+            "Task Name": parsed.address or f"Graycliff Work Order {project_id}",
+            "Address": parsed.address,
+            "City": parsed.city,
+            "Job Type": "Standard",
+            "Due Date": parsed.due_date,
+            "Priority": "Normal",
+            "Status": "Unassigned",
+            "Customer Notes": f"PRISM {parsed.prism}",
+        }
+
+        if project_id in existing:
+            row = existing[project_id]
+            update_values = {
+                key: value
+                for key, value in values.items()
+                if value and row.get(key, "") != value
+            }
+            if update_values:
+                store.update_row(FIELD_SHEET_ID, int(row["_row_id"]), update_values)
+            target_row_id = int(row["_row_id"])
+            stats["updated"] += 1
+            result_name = "updated-revision"
+        else:
+            created = create_field_job({"Project ID": project_id, **values})
+            target_row_id = int(created["row"].get("id"))
+            stats["created"] += 1
+            result_name = "created"
+            existing = by_project(record_map(FIELD_SHEET_ID, force=True))
+
+        current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
+        if message.get("hasAttachments"):
+            for item in graph_list_attachments(token, message_id):
+                decoded = graph_attachment_bytes(item)
+                if not decoded:
+                    continue
+                filename, mime_type, data = decoded
+                if filename in current_names:
+                    continue
+                store.attach_file_to_row(
+                    FIELD_SHEET_ID,
+                    target_row_id,
+                    filename=filename,
+                    mime_type=mime_type,
+                    data=data,
+                )
+                current_names.add(filename)
+                stats["attachments"] += 1
+
+        eml_name = f"NTP-{project_id}-{message_id[-8:]}.eml"
+        if eml_name not in current_names:
+            mime_data = get_message_mime(token, message_id)
+            if mime_data:
+                store.attach_file_to_row(
+                    FIELD_SHEET_ID,
+                    target_row_id,
+                    filename=eml_name,
+                    mime_type="message/rfc822",
+                    data=mime_data,
+                )
+                stats["attachments"] += 1
+
+        _record_mail_result(message, project_id=project_id, result=result_name)
+
+    if stats["created"] or stats["updated"]:
+        sync_mobile_field_sheets()
+
+    return {
+        "ok": True,
+        "configured": True,
+        **stats,
+        "message": (
+            f"Mailbox import complete: {stats['created']} job(s) created, "
+            f"{stats['updated']} revision(s) updated, {stats['ignored']} "
+            f"unrecognized email(s) left for manual entry, and "
+            f"{stats['attachments']} attachment(s) copied."
+        ),
+    }
+
+
 def sync_mobile_field_sheets() -> dict[str, Any]:
     setup = ensure_mobile_field_sheets()
     if not setup.get("ok"):
@@ -568,9 +794,17 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
         for field in TECH_TO_MASTER_FIELDS:
             if master.get(field, "") != mobile.get(field, ""):
                 master_updates[field] = mobile.get(field, "")
+
+        # Dates are system-stamped from status changes and never manually entered.
+        date_mobile_updates = {}
+        _stamp_status_dates(master, mobile, master_updates, date_mobile_updates)
+
         if master_updates:
             store.update_row(FIELD_SHEET_ID, int(master["_row_id"]), master_updates)
             stats["updated_master_rows"] += 1
+        if date_mobile_updates:
+            store.update_row(target_id, int(mobile["_row_id"]), date_mobile_updates)
+            stats["updated_mobile_rows"] += 1
 
         # Attachments flow both directions and are de-duplicated by filename.
         stats["copied_attachments"] += _copy_new_attachments(
@@ -788,6 +1022,14 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        import_graycliff_mailbox,
+        "interval",
+        minutes=minutes,
+        id="graycliff_mailbox_import",
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
 
 
@@ -861,7 +1103,61 @@ def dashboard():
         "ready_to_bill": sum(str(r.get("Billing Status", "")) == "Ready to Bill" for r in billing_rows),
         "invoiced": sum(str(r.get("Billing Status", "")) in {"Invoiced", "Sent"} for r in billing_rows),
     }
-    return render_template("dashboard.html", metrics=metrics)
+    return render_template(
+        "dashboard.html",
+        metrics=metrics,
+        mailbox_configured=graph_configured(),
+        mailbox_address=graph_mailbox(),
+    )
+
+
+
+@app.route("/office/work-orders/new", methods=["GET", "POST"])
+@roles("admin", "office")
+def create_work_order():
+    technicians = active_technicians()
+    if request.method == "POST":
+        try:
+            result = create_field_job(
+                {
+                    "Project ID": request.form.get("project_id", "").strip(),
+                    "Market": request.form.get("market", "").strip(),
+                    "Task Name": request.form.get("task_name", "").strip(),
+                    "Address": request.form.get("address", "").strip(),
+                    "City": request.form.get("city", "").strip(),
+                    "Job Type": request.form.get("job_type", "Standard").strip(),
+                    "CRQ Number": request.form.get("crq_number", "").strip(),
+                    "Due Date": request.form.get("due_date", "").strip(),
+                    "Assigned Technician": request.form.get("assigned_technician", "").strip(),
+                    "Priority": request.form.get("priority", "Normal").strip(),
+                    "Status": "Unassigned",
+                    "Customer Notes": request.form.get("customer_notes", "").strip(),
+                }
+            )
+            project_id = result["project_id"]
+            log_action("Create Work Order", "project", project_id, "manual")
+            sync_mobile_field_sheets()
+            flash(f"Job {project_id} created.", "success")
+            return redirect(url_for("office_work_order_detail", project_id=project_id))
+        except ValueError as exc:
+            flash(str(exc), "error")
+        except Exception as exc:
+            flash(f"Unable to create job: {exc}", "error")
+
+    return render_template("create_work_order.html", technicians=technicians)
+
+
+@app.route("/admin/import-graycliff-mail", methods=["POST"])
+@roles("admin")
+def admin_import_graycliff_mail():
+    try:
+        result = import_graycliff_mailbox()
+        flash(result.get("message", "Mailbox import finished."), "success" if result.get("ok") else "error")
+        if result.get("ok"):
+            log_action("Import Graycliff Mail", "mailbox", graph_mailbox(), str(result))
+    except GraphImportError as exc:
+        flash(str(exc), "error")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/office/work-orders")
@@ -995,23 +1291,6 @@ def customer_job_detail(project_id: str):
 
 
 
-@app.route("/repair-admin")
-@require_login
-def repair_admin():
-    current_email = session.get("user", "").strip().lower()
-    if not current_email:
-        abort(403)
-
-    with db() as connection:
-        connection.execute(
-            "UPDATE users SET role='admin', active=1 WHERE email=?",
-            (current_email,),
-        )
-
-    session["role"] = "admin"
-    flash("Administrator access repaired.", "success")
-    return redirect(url_for("dashboard"))
-
 
 @app.route("/admin/users", methods=["GET", "POST"])
 @roles("admin")
@@ -1054,7 +1333,7 @@ def users():
 
 
 @app.route("/admin/build-mobile-field-sheets", methods=["POST"])
-@require_login
+@roles("admin")
 def admin_build_mobile_field_sheets():
     result = sync_mobile_field_sheets()
     if result.get("ok"):
@@ -1066,7 +1345,7 @@ def admin_build_mobile_field_sheets():
 
 
 @app.route("/admin/build-field-views", methods=["POST"])
-@require_login
+@roles("admin")
 def admin_build_field_views():
     result = build_field_reports()
     if result.get("ok"):
@@ -1081,14 +1360,26 @@ def admin_build_field_views():
 @roles("admin")
 def admin_sync():
     tech_result = sync_technician_contacts()
+    mobile_result = sync_mobile_field_sheets()
     billing_result = sync_billing_queue()
-    if tech_result.get("ok"):
+    mail_result = import_graycliff_mailbox() if graph_configured() else {
+        "ok": False,
+        "message": "Mailbox not configured.",
+        "created": 0,
+        "updated": 0,
+    }
+    if tech_result.get("ok") and mobile_result.get("ok"):
         flash(
-            f"{tech_result.get('message')} Billing queue added {billing_result.get('created', 0)} record(s).",
+            f"{tech_result.get('message')} {mobile_result.get('message')} "
+            f"Billing queue added {billing_result.get('created', 0)} record(s). "
+            f"{mail_result.get('message', '')}",
             "success",
         )
     else:
-        flash(tech_result.get("message", "Sync failed."), "error")
+        flash(
+            tech_result.get("message") or mobile_result.get("message") or "Sync failed.",
+            "error",
+        )
     return redirect(request.referrer or url_for("dashboard"))
 
 
