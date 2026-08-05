@@ -1449,7 +1449,7 @@ def attachment_download(sheet_id: int, row_id: int, filename: str):
         return redirect(request.referrer or url_for("office_work_orders"))
 
     try:
-        data, current_name, mime = store.download_attachment(int(match["id"]))
+        data, current_name, mime = store.download_attachment(sheet_id, int(match["id"]))
     except SmartsheetError:
         flash("Smartsheet could not open that file. Refresh the page and try again.", "error")
         return redirect(request.referrer or url_for("office_work_orders"))

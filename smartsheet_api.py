@@ -248,14 +248,29 @@ class SmartsheetClient:
         payload = self._request("GET", f"/sheets/{sheet_id}/rows/{row_id}/attachments")
         return payload.get("data", [])
 
-    def download_attachment(self, attachment_id: int) -> tuple[bytes, str, str]:
-        meta = self._request("GET", f"/attachments/{attachment_id}")
+    def download_attachment(
+        self,
+        sheet_id: int,
+        attachment_id: int,
+    ) -> tuple[bytes, str, str]:
+        # Smartsheet's current API requires the containing sheet ID when
+        # retrieving an attachment's temporary download URL.
+        meta = self._request(
+            "GET",
+            f"/sheets/{sheet_id}/attachments/{attachment_id}",
+        )
         url = meta.get("url")
         if not url:
             raise SmartsheetError("Attachment download URL was not returned.")
+
         with urllib.request.urlopen(url, timeout=120) as response:
             data = response.read()
-        return data, meta.get("name", "attachment"), meta.get("mimeType", "application/octet-stream")
+
+        return (
+            data,
+            meta.get("name", "attachment"),
+            meta.get("mimeType", "application/octet-stream"),
+        )
 
 
 def rows_as_records(sheet: dict[str, Any]) -> list[dict[str, Any]]:

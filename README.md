@@ -255,3 +255,15 @@ reason. Held jobs remain hidden from technicians.
 
 New holds use Status = On Hold. Legacy Missing Documents rows are still treated
 and displayed as On Hold.
+
+
+## Smartsheet attachment endpoint correction
+
+The download failure was not caused by the ZIP file. The portal was calling the
+obsolete attachment endpoint `/attachments/{attachmentId}`.
+
+It now uses Smartsheet's required endpoint:
+
+`/sheets/{sheetId}/attachments/{attachmentId}`
+
+This works for ZIP, EML, PDF, image, and other file attachments.
