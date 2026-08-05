@@ -206,6 +206,14 @@ class SmartsheetClient:
             return []
         return payload.get("data", payload.get("result", []))
 
+    def delete_attachment(self, sheet_id: int, attachment_id: int) -> Any:
+        result = self._request(
+            "DELETE",
+            f"/sheets/{sheet_id}/attachments/{attachment_id}",
+        )
+        self.invalidate(f"sheet:{sheet_id}")
+        return result
+
     def update_column(self, sheet_id: int, column_id: int, body: dict[str, Any]) -> Any:
         result = self._request("PUT", f"/sheets/{sheet_id}/columns/{column_id}", body=body)
         self.invalidate(f"sheet:{sheet_id}")

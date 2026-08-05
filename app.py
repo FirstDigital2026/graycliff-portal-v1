@@ -136,6 +136,14 @@ def init_db() -> None:
                 result TEXT NOT NULL,
                 imported_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS field_document_selection (
+                project_id TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                selected_at TEXT NOT NULL,
+                selected_by TEXT,
+                PRIMARY KEY(project_id, filename)
+            );
             """
         )
 
@@ -482,6 +490,40 @@ def ensure_mobile_field_sheets() -> dict[str, Any]:
     }
 
 
+def selected_field_document_names(project_id: str) -> set[str]:
+    with db() as connection:
+        rows = connection.execute(
+            "SELECT filename FROM field_document_selection WHERE project_id=?",
+            (project_id,),
+        ).fetchall()
+    return {str(row["filename"]) for row in rows}
+
+
+def select_field_document(project_id: str, filename: str) -> None:
+    with db() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO field_document_selection(
+                project_id, filename, selected_at, selected_by
+            ) VALUES(?,?,?,?)
+            """,
+            (
+                project_id,
+                filename,
+                datetime.now().isoformat(timespec="seconds"),
+                session.get("user_email", ""),
+            ),
+        )
+
+
+def unselect_field_document(project_id: str, filename: str) -> None:
+    with db() as connection:
+        connection.execute(
+            "DELETE FROM field_document_selection WHERE project_id=? AND filename=?",
+            (project_id, filename),
+        )
+
+
 def _attachment_names(sheet_id: int, row_id: int) -> set[str]:
     return {
         str(item.get("name", "")).strip()
@@ -490,20 +532,47 @@ def _attachment_names(sheet_id: int, row_id: int) -> set[str]:
     }
 
 
-def _copy_new_attachments(
+def _sync_selected_attachments(
+    project_id: str,
     source_sheet_id: int,
     source_row_id: int,
     target_sheet_id: int,
     target_row_id: int,
 ) -> int:
     copied = 0
-    target_names = _attachment_names(target_sheet_id, target_row_id)
-    for attachment in store.list_row_attachments(source_sheet_id, source_row_id):
-        name = str(attachment.get("name", "")).strip()
-        attachment_id = attachment.get("id")
-        if not name or not attachment_id or name in target_names:
+    selected = selected_field_document_names(project_id)
+    source_items = store.list_row_attachments(source_sheet_id, source_row_id)
+    target_items = store.list_row_attachments(target_sheet_id, target_row_id)
+
+    source_by_name = {
+        str(item.get("name", "")).strip(): item
+        for item in source_items
+        if str(item.get("name", "")).strip()
+    }
+    target_by_name = {
+        str(item.get("name", "")).strip(): item
+        for item in target_items
+        if str(item.get("name", "")).strip()
+    }
+
+    # Remove files that the manager removed from Field Documents.
+    for name, item in target_by_name.items():
+        attachment_id = item.get("id")
+        if attachment_id and name not in selected:
+            store.delete_attachment(target_sheet_id, int(attachment_id))
+
+    # Copy only manager-selected files.
+    for name in selected:
+        source = source_by_name.get(name)
+        if not source or name in target_by_name:
             continue
-        data, filename, mime = store.download_attachment(int(attachment_id))
+        attachment_id = source.get("id")
+        if not attachment_id:
+            continue
+        data, filename, mime = store.download_attachment(
+            source_sheet_id,
+            int(attachment_id),
+        )
         store.attach_file_to_row(
             target_sheet_id,
             target_row_id,
@@ -511,8 +580,8 @@ def _copy_new_attachments(
             mime_type=mime,
             data=data,
         )
-        target_names.add(name)
         copied += 1
+
     return copied
 
 
@@ -834,7 +903,8 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             new_row = store.add_row(target_id, values)
             mobile_row_id = int(new_row.get("id"))
             stats["created_rows"] += 1
-            stats["copied_attachments"] += _copy_new_attachments(
+            stats["copied_attachments"] += _sync_selected_attachments(
+                project_id,
                 FIELD_SHEET_ID,
                 int(master["_row_id"]),
                 target_id,
@@ -883,7 +953,8 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             FIELD_SHEET_ID,
             int(master["_row_id"]),
         )
-        stats["copied_attachments"] += _copy_new_attachments(
+        stats["copied_attachments"] += _sync_selected_attachments(
+            project_id,
             FIELD_SHEET_ID,
             int(master["_row_id"]),
             target_id,
@@ -1276,6 +1347,15 @@ def office_work_order_detail(project_id: str):
     if not job:
         abort(404)
     attachments = store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"])
+    selected_names = selected_field_document_names(project_id)
+    field_documents = [
+        item for item in attachments
+        if str(item.get("name", "")).strip() in selected_names
+    ]
+    source_documents = [
+        item for item in attachments
+        if str(item.get("name", "")).strip() not in selected_names
+    ]
     try:
         discussions = store.list_row_discussions(FIELD_SHEET_ID, job["_row_id"])
     except Exception:
@@ -1284,7 +1364,8 @@ def office_work_order_detail(project_id: str):
     return render_template(
         "office_work_order_detail.html",
         job=job,
-        attachments=attachments,
+        source_documents=source_documents,
+        field_documents=field_documents,
         discussions=discussions,
         billing=billing,
         technicians=active_technicians(),
@@ -1367,9 +1448,48 @@ def upload_work_order_document(project_id: str):
             mime_type=mime_type,
             data=data,
         )
+        select_field_document(project_id, filename)
         added += 1
 
+    sync_mobile_field_sheets()
     flash(f"{added} document(s) added to the field documents.", "success")
+    return redirect(url_for("office_work_order_detail", project_id=project_id))
+
+
+
+@app.route("/office/work-orders/<project_id>/documents/select", methods=["POST"])
+@roles("admin", "office")
+def select_work_order_field_document(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
+    filename = request.form.get("filename", "").strip()
+    available = {
+        str(item.get("name", "")).strip()
+        for item in store.list_row_attachments(FIELD_SHEET_ID, int(job["_row_id"]))
+    }
+    if not filename or filename not in available:
+        flash("That source document is no longer available.", "error")
+    else:
+        select_field_document(project_id, filename)
+        sync_mobile_field_sheets()
+        flash(f"{filename} added to Field Documents.", "success")
+    return redirect(url_for("office_work_order_detail", project_id=project_id))
+
+
+@app.route("/office/work-orders/<project_id>/documents/unselect", methods=["POST"])
+@roles("admin", "office")
+def unselect_work_order_field_document(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
+    filename = request.form.get("filename", "").strip()
+    if filename:
+        unselect_field_document(project_id, filename)
+        sync_mobile_field_sheets()
+        flash(f"{filename} removed from Field Documents.", "success")
     return redirect(url_for("office_work_order_detail", project_id=project_id))
 
 

@@ -267,3 +267,15 @@ It now uses Smartsheet's required endpoint:
 `/sheets/{sheetId}/attachments/{attachmentId}`
 
 This works for ZIP, EML, PDF, image, and other file attachments.
+
+
+## Manager-selected field documents
+
+Email and NTP package attachments remain as Work Order Documents on the master job.
+They are not automatically copied to technicians.
+
+The manager reviews each source document and clicks Add to Field for documents the
+technician needs. Field Documents can be removed without deleting the original
+master attachment. Documents uploaded through Add Field Documents are selected
+automatically. Mobile sync copies only the selected Field Documents and removes
+documents that the manager later removes from field release.

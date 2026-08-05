@@ -41,3 +41,10 @@ button.danger{background:#fff0f0;color:#a61b1b;border:1px solid #e8b5b5}
 .hold-item-top strong{font-size:18px;color:#8f1d14}
 .hold-item-top span{font-weight:700}
 .hold-reason{margin-top:8px;padding:10px 12px;background:white;border-radius:7px;border:1px solid #efd7d4}
+
+.document-list{display:flex;flex-direction:column;gap:8px;margin-bottom:22px}
+.document-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 10px;border:1px solid #cbdce7;border-radius:7px;background:#eef7fc}
+.document-row>a{min-width:0;overflow-wrap:anywhere}
+.document-row form{margin:0;flex:0 0 auto}
+button.compact{padding:7px 10px;font-size:12px}
+.panel h3{margin-top:24px}
