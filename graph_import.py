@@ -379,6 +379,34 @@ def list_mail_folders(token: str) -> list[dict[str, Any]]:
     return result.get("value", []) if isinstance(result, dict) else []
 
 
+
+
+def find_mail_folder_id(token: str, display_name: str) -> str:
+    wanted = display_name.strip().lower()
+    for folder in list_mail_folders(token):
+        if str(folder.get("displayName", "")).strip().lower() == wanted:
+            return str(folder.get("id", ""))
+    return ""
+
+
+def list_folder_messages(token: str, folder_id: str, *, top: int = 100) -> list[dict[str, Any]]:
+    user = urllib.parse.quote(mailbox())
+    fid = urllib.parse.quote(folder_id, safe="")
+    query = urllib.parse.urlencode(
+        {
+            "$top": str(top),
+            "$orderby": "receivedDateTime desc",
+            "$select": "id,subject,receivedDateTime,bodyPreview,hasAttachments,internetMessageId,isRead",
+        }
+    )
+    result = _request(
+        "GET",
+        f"{GRAPH_ROOT}/users/{user}/mailFolders/{fid}/messages?{query}",
+        token=token,
+    )
+    return result.get("value", []) if isinstance(result, dict) else []
+
+
 def ensure_mail_folder(token: str, display_name: str) -> str:
     for folder in list_mail_folders(token):
         if str(folder.get("displayName", "")).strip().lower() == display_name.strip().lower():

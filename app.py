@@ -40,6 +40,8 @@ from graph_import import (
     get_message_mime,
     list_attachments as graph_list_attachments,
     list_recent_messages as graph_list_recent_messages,
+    list_folder_messages as graph_list_folder_messages,
+    find_mail_folder_id as graph_find_mail_folder_id,
     ensure_mail_folder as graph_ensure_mail_folder,
     move_message as graph_move_message,
     mark_message_read as graph_mark_message_read,
@@ -1404,6 +1406,48 @@ def logout():
     return redirect(url_for("login"))
 
 
+def failed_mailbox_items(limit: int = 50) -> tuple[list[dict[str, Any]], str]:
+    if not graph_configured():
+        return [], ""
+    try:
+        token = graph_access_token()
+        folder_id = graph_find_mail_folder_id(token, "Import Failed")
+        if not folder_id:
+            return [], ""
+        messages = graph_list_folder_messages(token, folder_id, top=limit)
+        with db() as connection:
+            history = connection.execute(
+                """
+                SELECT internet_message_id, subject, project_id, result, imported_at
+                FROM imported_mail
+                WHERE result LIKE 'failed%'
+                ORDER BY imported_at DESC
+                """
+            ).fetchall()
+        by_internet_id = {}
+        by_subject = {}
+        for row in history:
+            item = dict(row)
+            if item.get("internet_message_id") and item["internet_message_id"] not in by_internet_id:
+                by_internet_id[item["internet_message_id"]] = item
+            if item.get("subject") and item["subject"] not in by_subject:
+                by_subject[item["subject"]] = item
+        results = []
+        for message in messages:
+            audit = by_internet_id.get(str(message.get("internetMessageId", ""))) or by_subject.get(str(message.get("subject", ""))) or {}
+            results.append({
+                "id": str(message.get("id", "")),
+                "subject": str(message.get("subject", "(No subject)")),
+                "received": str(message.get("receivedDateTime", "")),
+                "has_attachments": bool(message.get("hasAttachments")),
+                "project_id": str(audit.get("project_id", "")),
+                "reason": str(audit.get("result", "failed: reason unavailable")).removeprefix("failed: "),
+            })
+        return results, ""
+    except Exception as exc:
+        return [], str(exc)
+
+
 @app.route("/dashboard")
 @require_login
 def dashboard():
@@ -1421,6 +1465,7 @@ def dashboard():
         )
         and not bool(r.get("Archived"))
     ]
+    failed_imports, failed_import_error = failed_mailbox_items()
     metrics = {
         "open": sum(
             str(r.get("Status", "")) not in {"Office Approved", "Closed"}
@@ -1431,6 +1476,7 @@ def dashboard():
         "on_hold": len(on_hold_jobs),
         "ready_to_bill": sum(str(r.get("Billing Status", "")) == "Ready to Bill" for r in billing_rows),
         "invoiced": sum(str(r.get("Billing Status", "")) in {"Invoiced", "Sent"} for r in billing_rows),
+        "failed_imports": len(failed_imports),
     }
     return render_template(
         "dashboard.html",
@@ -1438,6 +1484,8 @@ def dashboard():
         on_hold_jobs=on_hold_jobs,
         mailbox_configured=graph_configured(),
         mailbox_address=graph_mailbox(),
+        failed_imports=failed_imports,
+        failed_import_error=failed_import_error,
     )
 
 
@@ -1528,6 +1576,25 @@ def admin_import_graycliff_mail():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/admin/mailbox/retry-failed/<path:message_id>", methods=["POST"])
+@roles("admin", "office")
+def retry_failed_mail(message_id: str):
+    try:
+        token = graph_access_token()
+        inbox_id = graph_find_mail_folder_id(token, "Inbox")
+        if not inbox_id:
+            raise GraphImportError("Microsoft Inbox folder could not be found.")
+        graph_move_message(token, message_id, inbox_id)
+        result = import_graycliff_mailbox()
+        if result.get("ok"):
+            flash(result.get("message", "Email retry completed."), "success")
+        else:
+            flash(result.get("message", "Email retry failed."), "error")
+    except Exception as exc:
+        flash(f"Could not retry that email: {exc}", "error")
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/office/work-orders")
 @roles("admin", "office")
 def office_work_orders():
@@ -1543,6 +1610,21 @@ def office_work_orders():
         ]
     elif status:
         rows = [row for row in rows if str(row.get("Status", "")) == status]
+    # The Documents column should show real attachments, not completion checkboxes.
+    field_document_sheet_id = ensure_document_sheet(FIELD_DOCUMENTS_SHEET_NAME)
+    field_document_rows = by_project(record_map(field_document_sheet_id))
+    for row in rows:
+        project_id = str(row.get("Project ID", ""))
+        source_items = store.list_row_attachments(FIELD_SHEET_ID, int(row["_row_id"]))
+        document_row = field_document_rows.get(project_id)
+        field_items = (
+            store.list_row_attachments(field_document_sheet_id, int(document_row["_row_id"]))
+            if document_row else []
+        )
+        row["_source_document_count"] = len(source_items)
+        row["_field_document_count"] = len(field_items)
+        row["_document_count"] = len({str(item.get("name", "")) for item in source_items + field_items if item.get("name")})
+
     rows.sort(key=lambda r: (str(r.get("Due Date", "9999-99-99")), str(r.get("Project ID", ""))))
     return render_template("office_work_orders.html", jobs=rows, selected_status=status)
 

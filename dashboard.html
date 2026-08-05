@@ -9,7 +9,34 @@
   <a class="metric" href="{{url_for('office_work_orders',status='On Hold')}}"><strong>{{metrics.on_hold}}</strong><span>On Hold</span></a>
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.ready_to_bill}}</strong><span>Ready to Bill</span></a>
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
+  <a class="metric {% if metrics.failed_imports %}metric-danger{% endif %}" href="#failed-imports"><strong>{{metrics.failed_imports}}</strong><span>Failed Email Imports</span></a>
 </div>
+
+{% if failed_imports or failed_import_error %}
+<section class="panel failed-import-panel" id="failed-imports">
+  <h2>Email imports requiring attention</h2>
+  {% if failed_import_error %}
+    <p class="error-text">The portal could not read the Import Failed folder: {{ failed_import_error }}</p>
+  {% endif %}
+  {% if failed_imports %}
+    <p>These emails reached the Graycliff mailbox but did not create or update a job. They remain here until successfully retried.</p>
+    <div class="failed-import-list">
+      {% for item in failed_imports %}
+      <div class="failed-import-item">
+        <div class="failed-import-main">
+          <strong>{{ item.subject }}</strong>
+          <span>{{ item.received|replace('T', ' ')|replace('Z', ' UTC') }}{% if item.project_id %} · Work order {{ item.project_id }}{% endif %}</span>
+          <span class="failure-reason">{{ item.reason }}</span>
+        </div>
+        <form method="post" action="{{ url_for('retry_failed_mail', message_id=item.id) }}">
+          <button class="primary compact">Retry Import</button>
+        </form>
+      </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</section>
+{% endif %}
 
 {% if on_hold_jobs %}
 <section class="panel hold-panel">

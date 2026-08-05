@@ -23,7 +23,16 @@
   <td>{{job.get('Assigned Technician','')}}</td>
   <td><span class="status">{% if job.get('Status') == 'Missing Documents' or job.get('Office Review Status') == 'Missing Documents' %}On Hold{% else %}{{job.get('Status','')}}{% endif %}</span></td>
   <td>{{job.get('Due Date','')}}</td>
-  <td>{{'Field ✓' if job.get('Field File Complete') else 'Field —'}} · {{'Photos ✓' if job.get('Required Photos Complete') else 'Photos —'}}</td>
+  <td>
+    <a href="{{ url_for('office_work_order_detail', project_id=job.get('Project ID')) }}">
+      {% if job.get('_document_count', 0) %}
+        {{ job.get('_document_count') }} file{{ '' if job.get('_document_count') == 1 else 's' }}
+        <span class="document-breakdown">(Email {{ job.get('_source_document_count', 0) }} · Field {{ job.get('_field_document_count', 0) }})</span>
+      {% else %}
+        No files
+      {% endif %}
+    </a>
+  </td>
 </tr>
 {% else %}<tr><td colspan="7" class="empty">No work orders found.</td></tr>{% endfor %}
 </tbody>
