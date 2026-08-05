@@ -17,7 +17,6 @@
     <button class="primary">Build &amp; Sync Mobile Field Sheets</button>
   </form>
 </section>
-{% endblock %}
 <section class="panel">
   <h2>Graycliff job mailbox</h2>
   <p>
@@ -29,10 +28,12 @@
       <strong>Waiting for Microsoft app credentials in Render</strong>
     {% endif %}
   </p>
-  <p>Only recognized Graycliff NTP emails are created automatically. PO numbers and dollar amounts are never written into the job workflow. Unrecognized emails stay in the mailbox for manual entry.</p>
+  <p>Only recognized Graycliff NTP emails are created automatically. PO numbers and dollar amounts are never written into the job workflow. Successful imports move to Imported. Recognized emails that fail move to Import Failed. Unrecognized emails stay in Inbox for manual entry.</p>
   {% if role == 'admin' %}
   <form method="post" action="{{ url_for('admin_import_graycliff_mail') }}">
     <button class="primary">Import Graycliff Jobs Now</button>
   </form>
   {% endif %}
 </section>
+
+{% endblock %}

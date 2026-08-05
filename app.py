@@ -34,6 +34,8 @@ from graph_import import (
     get_message_mime,
     list_attachments as graph_list_attachments,
     list_recent_messages as graph_list_recent_messages,
+    ensure_mail_folder as graph_ensure_mail_folder,
+    move_message as graph_move_message,
     mailbox as graph_mailbox,
     parse_recognized_ntp,
 )
@@ -588,21 +590,15 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
 
 def import_graycliff_mailbox() -> dict[str, Any]:
     if not graph_configured():
-        return {
-            "ok": False,
-            "configured": False,
-            "message": "Graycliff mailbox connection is not configured in Render.",
-            "created": 0,
-            "updated": 0,
-            "ignored": 0,
-        }
+        return {"ok": False, "configured": False, "message": "Graycliff mailbox connection is not configured in Render.", "created": 0, "updated": 0, "ignored": 0, "failed": 0}
 
     token = graph_access_token()
+    imported_folder = graph_ensure_mail_folder(token, "Imported")
+    failed_folder = graph_ensure_mail_folder(token, "Import Failed")
     messages = graph_list_recent_messages(token, top=40)
     existing = by_project(record_map(FIELD_SHEET_ID, force=True))
-    stats = {"created": 0, "updated": 0, "ignored": 0, "attachments": 0}
+    stats = {"created": 0, "updated": 0, "ignored": 0, "failed": 0, "attachments": 0}
 
-    # Process oldest first so revisions encountered later can update the same row.
     for message in reversed(messages):
         message_id = str(message.get("id", ""))
         if not message_id or _mail_already_processed(message_id):
@@ -610,89 +606,78 @@ def import_graycliff_mailbox() -> dict[str, Any]:
 
         parsed = parse_recognized_ntp(message)
         if not parsed:
-            # Unrecognized mail stays in the mailbox for manual entry.
+            # Unrecognized formats remain in Inbox for manual entry.
             stats["ignored"] += 1
-            _record_mail_result(message, result="ignored-unrecognized")
             continue
 
         project_id = parsed.work_order
-        values = {
-            "Market": parsed.market,
-            "Task Name": parsed.address or f"Graycliff Work Order {project_id}",
-            "Address": parsed.address,
-            "City": parsed.city,
-            "Job Type": "Standard",
-            "Due Date": parsed.due_date,
-            "Priority": "Normal",
-            "Status": "Unassigned",
-            "Customer Notes": f"PRISM {parsed.prism}",
-        }
-
-        if project_id in existing:
-            row = existing[project_id]
-            update_values = {
-                key: value
-                for key, value in values.items()
-                if value and row.get(key, "") != value
+        try:
+            values = {
+                "Market": parsed.market,
+                "Task Name": parsed.address or f"Graycliff Work Order {project_id}",
+                "Address": parsed.address,
+                "City": parsed.city,
+                "Job Type": "Standard",
+                "Due Date": parsed.due_date,
+                "Priority": "Normal",
+                "Status": "Unassigned",
+                "Customer Notes": f"PRISM {parsed.prism}",
             }
-            if update_values:
-                store.update_row(FIELD_SHEET_ID, int(row["_row_id"]), update_values)
-            target_row_id = int(row["_row_id"])
-            stats["updated"] += 1
-            result_name = "updated-revision"
-        else:
-            created = create_field_job({"Project ID": project_id, **values})
-            target_row_id = int(created["row"].get("id"))
-            stats["created"] += 1
-            result_name = "created"
-            existing = by_project(record_map(FIELD_SHEET_ID, force=True))
 
-        current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
-        if message.get("hasAttachments"):
-            for item in graph_list_attachments(token, message_id):
-                decoded = graph_attachment_bytes(item)
-                if not decoded:
-                    continue
-                filename, mime_type, data = decoded
-                if filename in current_names:
-                    continue
-                store.attach_file_to_row(
-                    FIELD_SHEET_ID,
-                    target_row_id,
-                    filename=filename,
-                    mime_type=mime_type,
-                    data=data,
-                )
-                current_names.add(filename)
-                stats["attachments"] += 1
+            if project_id in existing:
+                row = existing[project_id]
+                update_values = {key: value for key, value in values.items() if value and row.get(key, "") != value}
+                if update_values:
+                    store.update_row(FIELD_SHEET_ID, int(row["_row_id"]), update_values)
+                target_row_id = int(row["_row_id"])
+                stats["updated"] += 1
+                result_name = "updated-revision"
+            else:
+                created = create_field_job({"Project ID": project_id, **values})
+                target_row_id = int(created["row"].get("id"))
+                stats["created"] += 1
+                result_name = "created"
+                existing = by_project(record_map(FIELD_SHEET_ID, force=True))
 
-        eml_name = f"NTP-{project_id}-{message_id[-8:]}.eml"
-        if eml_name not in current_names:
-            mime_data = get_message_mime(token, message_id)
-            if mime_data:
-                store.attach_file_to_row(
-                    FIELD_SHEET_ID,
-                    target_row_id,
-                    filename=eml_name,
-                    mime_type="message/rfc822",
-                    data=mime_data,
-                )
-                stats["attachments"] += 1
+            current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
+            if message.get("hasAttachments"):
+                for item in graph_list_attachments(token, message_id):
+                    decoded = graph_attachment_bytes(item)
+                    if not decoded:
+                        continue
+                    filename, mime_type, data = decoded
+                    if filename in current_names:
+                        continue
+                    store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=filename, mime_type=mime_type, data=data)
+                    current_names.add(filename)
+                    stats["attachments"] += 1
 
-        _record_mail_result(message, project_id=project_id, result=result_name)
+            eml_name = f"NTP-{project_id}-{message_id[-8:]}.eml"
+            if eml_name not in current_names:
+                mime_data = get_message_mime(token, message_id)
+                if mime_data:
+                    store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=eml_name, mime_type="message/rfc822", data=mime_data)
+                    stats["attachments"] += 1
+
+            _record_mail_result(message, project_id=project_id, result=result_name)
+            graph_move_message(token, message_id, imported_folder)
+        except Exception as exc:
+            stats["failed"] += 1
+            _record_mail_result(message, project_id=project_id, result=f"failed: {str(exc)[:300]}")
+            try:
+                graph_move_message(token, message_id, failed_folder)
+            except Exception:
+                pass
 
     if stats["created"] or stats["updated"]:
         sync_mobile_field_sheets()
 
     return {
-        "ok": True,
-        "configured": True,
-        **stats,
+        "ok": True, "configured": True, **stats,
         "message": (
-            f"Mailbox import complete: {stats['created']} job(s) created, "
-            f"{stats['updated']} revision(s) updated, {stats['ignored']} "
-            f"unrecognized email(s) left for manual entry, and "
-            f"{stats['attachments']} attachment(s) copied."
+            f"Mailbox import complete: {stats['created']} job(s) created, {stats['updated']} revision(s) updated, "
+            f"{stats['failed']} failed email(s) moved to Import Failed, {stats['ignored']} unrecognized email(s) left in Inbox, "
+            f"and {stats['attachments']} attachment(s) copied."
         ),
     }
 

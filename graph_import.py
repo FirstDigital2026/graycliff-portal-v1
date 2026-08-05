@@ -233,6 +233,49 @@ def parse_recognized_ntp(message: dict[str, Any]) -> ParsedNtp | None:
     )
 
 
+
+def list_mail_folders(token: str) -> list[dict[str, Any]]:
+    user = urllib.parse.quote(mailbox())
+    result = _request(
+        "GET",
+        f"{GRAPH_ROOT}/users/{user}/mailFolders?$top=100&includeHiddenFolders=true",
+        token=token,
+    )
+    return result.get("value", []) if isinstance(result, dict) else []
+
+
+def ensure_mail_folder(token: str, display_name: str) -> str:
+    for folder in list_mail_folders(token):
+        if str(folder.get("displayName", "")).strip().lower() == display_name.strip().lower():
+            return str(folder.get("id"))
+    user = urllib.parse.quote(mailbox())
+    payload = json.dumps({"displayName": display_name}).encode("utf-8")
+    result = _request(
+        "POST",
+        f"{GRAPH_ROOT}/users/{user}/mailFolders",
+        token=token,
+        body=payload,
+        headers={"Content-Type": "application/json"},
+    )
+    folder_id = result.get("id") if isinstance(result, dict) else None
+    if not folder_id:
+        raise GraphImportError(f"Unable to create mailbox folder {display_name}.")
+    return str(folder_id)
+
+
+def move_message(token: str, message_id: str, destination_folder_id: str) -> None:
+    user = urllib.parse.quote(mailbox())
+    mid = urllib.parse.quote(message_id, safe="")
+    payload = json.dumps({"destinationId": destination_folder_id}).encode("utf-8")
+    _request(
+        "POST",
+        f"{GRAPH_ROOT}/users/{user}/messages/{mid}/move",
+        token=token,
+        body=payload,
+        headers={"Content-Type": "application/json"},
+    )
+
+
 def attachment_bytes(item: dict[str, Any]) -> tuple[str, str, bytes] | None:
     if item.get("@odata.type") != "#microsoft.graph.fileAttachment":
         return None
