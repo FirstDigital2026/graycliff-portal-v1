@@ -294,3 +294,15 @@ Billing Documents are separate from Field Documents:
 - Office staff can upload billing-only documents.
 - Removing a Billing Document does not remove it from Field Documents or delete
   the original master attachment.
+
+
+## Separate document storage
+
+The main Graycliff Field Work Orders row stores only the original work-order
+package and source email attachments.
+
+Field Documents are stored in a separate Graycliff Field Documents sheet.
+Billing Documents are stored in a separate Graycliff Billing Documents sheet.
+
+Technician rows mirror only the Field Documents row after approval. Technician
+closeout attachments copy into Billing Documents, not onto the main job row.

@@ -87,7 +87,7 @@
   <div class="document-list">
   {% for f in field_documents %}
     <div class="document-row">
-      <a href="{{ url_for('attachment_download', sheet_id=field_sheet_id, row_id=job._row_id, filename=f.name) }}">{{ f.name }}</a>
+      <a href="{{ url_for('attachment_download', sheet_id=field_documents_sheet_id, row_id=field_documents_row_id, filename=f.name) }}">{{ f.name }}</a>
       <form method="post" action="{{ url_for('unselect_work_order_field_document', project_id=job.get('Project ID')) }}">
         <input type="hidden" name="filename" value="{{ f.name }}">
         <button class="danger compact">Remove</button>

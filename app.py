@@ -437,6 +437,64 @@ def ensure_mobile_summary_columns(sheet_id: int) -> None:
         )
 
 
+
+def document_sheet_definition(name: str) -> dict[str, Any]:
+    return {
+        "name": name,
+        "columns": [
+            {"title": "Project ID", "type": "TEXT_NUMBER", "primary": True},
+            {"title": "Document Type", "type": "TEXT_NUMBER"},
+            {"title": "Master Row ID", "type": "TEXT_NUMBER"},
+        ],
+    }
+
+
+def ensure_document_sheet(name: str) -> int:
+    sheet = find_sheet_by_name(name)
+    if sheet and sheet.get("id"):
+        return int(sheet["id"])
+    created = store.create_sheet_in_workspace(
+        WORKSPACE_ID,
+        document_sheet_definition(name),
+    )
+    return int(created["id"])
+
+
+def ensure_document_row(
+    sheet_id: int,
+    project_id: str,
+    master_row_id: int,
+    document_type: str,
+) -> int:
+    existing = by_project(record_map(sheet_id, force=True)).get(project_id)
+    if existing:
+        return int(existing["_row_id"])
+    created = store.add_row(
+        sheet_id,
+        {
+            "Project ID": project_id,
+            "Document Type": document_type,
+            "Master Row ID": str(master_row_id),
+        },
+    )
+    return int(created["id"])
+
+
+def document_sheet_context(project_id: str, master_row_id: int) -> dict[str, int]:
+    field_sheet_id = ensure_document_sheet(FIELD_DOCUMENTS_SHEET_NAME)
+    billing_sheet_id = ensure_document_sheet(BILLING_DOCUMENTS_SHEET_NAME)
+    return {
+        "field_sheet_id": field_sheet_id,
+        "field_row_id": ensure_document_row(
+            field_sheet_id, project_id, master_row_id, "Field"
+        ),
+        "billing_sheet_id": billing_sheet_id,
+        "billing_row_id": ensure_document_row(
+            billing_sheet_id, project_id, master_row_id, "Billing"
+        ),
+    }
+
+
 def mobile_sheet_definition(name: str) -> dict[str, Any]:
     source = store.get_sheet(FIELD_SHEET_ID, force=True)
     source_columns = {c["title"]: c for c in source.get("columns", [])}
@@ -573,36 +631,31 @@ def unselect_billing_document(project_id: str, filename: str) -> None:
         )
 
 
-def _copy_mobile_attachments_to_master(
+def _copy_mobile_attachments_to_billing(
     project_id: str,
     mobile_sheet_id: int,
     mobile_row_id: int,
-    master_sheet_id: int,
     master_row_id: int,
 ) -> int:
     copied = 0
+    context = document_sheet_context(project_id, master_row_id)
+    target_sheet_id = context["billing_sheet_id"]
+    target_row_id = context["billing_row_id"]
     source_items = store.list_row_attachments(mobile_sheet_id, mobile_row_id)
-    target_names = _attachment_names(master_sheet_id, master_row_id)
+    target_names = _attachment_names(target_sheet_id, target_row_id)
 
     for item in source_items:
         name = str(item.get("name", "")).strip()
         attachment_id = item.get("id")
-        if not name or not attachment_id:
+        if not name or not attachment_id or name in target_names:
             continue
-
-        # Anything a technician attaches is part of the billing package.
-        select_billing_document(project_id, name, source="technician")
-
-        if name in target_names:
-            continue
-
         data, filename, mime = store.download_attachment(
             mobile_sheet_id,
             int(attachment_id),
         )
         store.attach_file_to_row(
-            master_sheet_id,
-            master_row_id,
+            target_sheet_id,
+            target_row_id,
             filename=filename,
             mime_type=mime,
             data=data,
@@ -621,18 +674,15 @@ def _attachment_names(sheet_id: int, row_id: int) -> set[str]:
     }
 
 
-def _sync_selected_attachments(
-    project_id: str,
+def _sync_all_row_attachments(
     source_sheet_id: int,
     source_row_id: int,
     target_sheet_id: int,
     target_row_id: int,
 ) -> int:
     copied = 0
-    selected = selected_field_document_names(project_id)
     source_items = store.list_row_attachments(source_sheet_id, source_row_id)
     target_items = store.list_row_attachments(target_sheet_id, target_row_id)
-
     source_by_name = {
         str(item.get("name", "")).strip(): item
         for item in source_items
@@ -644,23 +694,16 @@ def _sync_selected_attachments(
         if str(item.get("name", "")).strip()
     }
 
-    # Remove files that the manager removed from Field Documents.
     for name, item in target_by_name.items():
-        attachment_id = item.get("id")
-        if attachment_id and name not in selected:
-            store.delete_attachment(target_sheet_id, int(attachment_id))
+        if name not in source_by_name and item.get("id"):
+            store.delete_attachment(target_sheet_id, int(item["id"]))
 
-    # Copy only manager-selected files.
-    for name in selected:
-        source = source_by_name.get(name)
-        if not source or name in target_by_name:
-            continue
-        attachment_id = source.get("id")
-        if not attachment_id:
+    for name, item in source_by_name.items():
+        if name in target_by_name or not item.get("id"):
             continue
         data, filename, mime = store.download_attachment(
             source_sheet_id,
-            int(attachment_id),
+            int(item["id"]),
         )
         store.attach_file_to_row(
             target_sheet_id,
@@ -672,7 +715,6 @@ def _sync_selected_attachments(
         copied += 1
 
     return copied
-
 
 
 def _today() -> str:
@@ -992,10 +1034,10 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             new_row = store.add_row(target_id, values)
             mobile_row_id = int(new_row.get("id"))
             stats["created_rows"] += 1
-            stats["copied_attachments"] += _sync_selected_attachments(
-                project_id,
-                FIELD_SHEET_ID,
-                int(master["_row_id"]),
+            context = document_sheet_context(project_id, int(master["_row_id"]))
+            stats["copied_attachments"] += _sync_all_row_attachments(
+                context["field_sheet_id"],
+                context["field_row_id"],
                 target_id,
                 mobile_row_id,
             )
@@ -1036,17 +1078,16 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             stats["updated_mobile_rows"] += 1
 
         # Attachments flow both directions and are de-duplicated by filename.
-        stats["copied_attachments"] += _copy_mobile_attachments_to_master(
+        stats["copied_attachments"] += _copy_mobile_attachments_to_billing(
             project_id,
             target_id,
             int(mobile["_row_id"]),
-            FIELD_SHEET_ID,
             int(master["_row_id"]),
         )
-        stats["copied_attachments"] += _sync_selected_attachments(
-            project_id,
-            FIELD_SHEET_ID,
-            int(master["_row_id"]),
+        context = document_sheet_context(project_id, int(master["_row_id"]))
+        stats["copied_attachments"] += _sync_all_row_attachments(
+            context["field_sheet_id"],
+            context["field_row_id"],
             target_id,
             int(mobile["_row_id"]),
         )
@@ -1436,16 +1477,12 @@ def office_work_order_detail(project_id: str):
     job = jobs.get(project_id)
     if not job:
         abort(404)
-    attachments = store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"])
-    selected_names = selected_field_document_names(project_id)
-    field_documents = [
-        item for item in attachments
-        if str(item.get("name", "")).strip() in selected_names
-    ]
-    source_documents = [
-        item for item in attachments
-        if str(item.get("name", "")).strip() not in selected_names
-    ]
+    source_documents = store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"])
+    context = document_sheet_context(project_id, int(job["_row_id"]))
+    field_documents = store.list_row_attachments(
+        context["field_sheet_id"],
+        context["field_row_id"],
+    )
     try:
         discussions = store.list_row_discussions(FIELD_SHEET_ID, job["_row_id"])
     except Exception:
@@ -1460,6 +1497,8 @@ def office_work_order_detail(project_id: str):
         billing=billing,
         technicians=active_technicians(),
         field_sheet_id=FIELD_SHEET_ID,
+        field_documents_sheet_id=context["field_sheet_id"],
+        field_documents_row_id=context["field_row_id"],
     )
 
 
@@ -1531,14 +1570,14 @@ def upload_work_order_document(project_id: str):
         if not data:
             continue
         mime_type = uploaded.mimetype or "application/octet-stream"
+        context = document_sheet_context(project_id, int(job["_row_id"]))
         store.attach_file_to_row(
-            FIELD_SHEET_ID,
-            int(job["_row_id"]),
+            context["field_sheet_id"],
+            context["field_row_id"],
             filename=filename,
             mime_type=mime_type,
             data=data,
         )
-        select_field_document(project_id, filename)
         added += 1
 
     sync_mobile_field_sheets()
@@ -1555,16 +1594,35 @@ def select_work_order_field_document(project_id: str):
         abort(404)
 
     filename = request.form.get("filename", "").strip()
-    available = {
-        str(item.get("name", "")).strip()
-        for item in store.list_row_attachments(FIELD_SHEET_ID, int(job["_row_id"]))
-    }
-    if not filename or filename not in available:
+    source_items = store.list_row_attachments(FIELD_SHEET_ID, int(job["_row_id"]))
+    source = next(
+        (
+            item for item in source_items
+            if str(item.get("name", "")).strip() == filename
+        ),
+        None,
+    )
+    if not source or not source.get("id"):
         flash("That source document is no longer available.", "error")
-    else:
-        select_field_document(project_id, filename)
-        sync_mobile_field_sheets()
-        flash(f"{filename} added to Field Documents.", "success")
+        return redirect(url_for("office_work_order_detail", project_id=project_id))
+
+    context = document_sheet_context(project_id, int(job["_row_id"]))
+    current = _attachment_names(context["field_sheet_id"], context["field_row_id"])
+    if filename not in current:
+        data, current_name, mime = store.download_attachment(
+            FIELD_SHEET_ID,
+            int(source["id"]),
+        )
+        store.attach_file_to_row(
+            context["field_sheet_id"],
+            context["field_row_id"],
+            filename=current_name,
+            mime_type=mime,
+            data=data,
+        )
+
+    sync_mobile_field_sheets()
+    flash(f"{filename} added to Field Documents.", "success")
     return redirect(url_for("office_work_order_detail", project_id=project_id))
 
 
@@ -1576,10 +1634,20 @@ def unselect_work_order_field_document(project_id: str):
         abort(404)
 
     filename = request.form.get("filename", "").strip()
-    if filename:
-        unselect_field_document(project_id, filename)
-        sync_mobile_field_sheets()
-        flash(f"{filename} removed from Field Documents.", "success")
+    context = document_sheet_context(project_id, int(job["_row_id"]))
+    items = store.list_row_attachments(context["field_sheet_id"], context["field_row_id"])
+    match = next(
+        (
+            item for item in items
+            if str(item.get("name", "")).strip() == filename
+        ),
+        None,
+    )
+    if match and match.get("id"):
+        store.delete_attachment(context["field_sheet_id"], int(match["id"]))
+
+    sync_mobile_field_sheets()
+    flash(f"{filename} removed from Field Documents.", "success")
     return redirect(url_for("office_work_order_detail", project_id=project_id))
 
 
@@ -1634,17 +1702,23 @@ def billing_detail(project_id: str):
         return redirect(url_for("billing_detail", project_id=project_id))
 
     job = by_project(record_map(FIELD_SHEET_ID)).get(project_id)
-    attachments = (
+    source_documents = (
         store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"]) if job else []
     )
-    selected_names = selected_billing_document_names(project_id)
-    billing_documents = [
-        item for item in attachments
-        if str(item.get("name", "")).strip() in selected_names
-    ]
+    context = document_sheet_context(project_id, int(job["_row_id"])) if job else None
+    billing_documents = (
+        store.list_row_attachments(
+            context["billing_sheet_id"],
+            context["billing_row_id"],
+        )
+        if context else []
+    )
+    billing_names = {
+        str(item.get("name", "")).strip() for item in billing_documents
+    }
     available_documents = [
-        item for item in attachments
-        if str(item.get("name", "")).strip() not in selected_names
+        item for item in source_documents
+        if str(item.get("name", "")).strip() not in billing_names
     ]
     return render_template(
         "billing_detail.html",
@@ -1653,6 +1727,8 @@ def billing_detail(project_id: str):
         billing_documents=billing_documents,
         available_documents=available_documents,
         field_sheet_id=FIELD_SHEET_ID,
+        billing_documents_sheet_id=context["billing_sheet_id"] if context else 0,
+        billing_documents_row_id=context["billing_row_id"] if context else 0,
     )
 
 
@@ -1665,25 +1741,61 @@ def select_billing_document_route(project_id: str):
         abort(404)
 
     filename = request.form.get("filename", "").strip()
-    available = {
-        str(item.get("name", "")).strip()
-        for item in store.list_row_attachments(FIELD_SHEET_ID, int(job["_row_id"]))
-    }
-    if not filename or filename not in available:
+    source_items = store.list_row_attachments(FIELD_SHEET_ID, int(job["_row_id"]))
+    source = next(
+        (
+            item for item in source_items
+            if str(item.get("name", "")).strip() == filename
+        ),
+        None,
+    )
+    if not source or not source.get("id"):
         flash("That job document is no longer available.", "error")
-    else:
-        select_billing_document(project_id, filename, source="office")
-        flash(f"{filename} added to Billing Documents.", "success")
+        return redirect(url_for("billing_detail", project_id=project_id))
+
+    context = document_sheet_context(project_id, int(job["_row_id"]))
+    current = _attachment_names(context["billing_sheet_id"], context["billing_row_id"])
+    if filename not in current:
+        data, current_name, mime = store.download_attachment(
+            FIELD_SHEET_ID,
+            int(source["id"]),
+        )
+        store.attach_file_to_row(
+            context["billing_sheet_id"],
+            context["billing_row_id"],
+            filename=current_name,
+            mime_type=mime,
+            data=data,
+        )
+
+    flash(f"{filename} added to Billing Documents.", "success")
     return redirect(url_for("billing_detail", project_id=project_id))
 
 
 @app.route("/office/billing/<project_id>/documents/unselect", methods=["POST"])
 @roles("admin", "office")
 def unselect_billing_document_route(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
     filename = request.form.get("filename", "").strip()
-    if filename:
-        unselect_billing_document(project_id, filename)
-        flash(f"{filename} removed from Billing Documents.", "success")
+    context = document_sheet_context(project_id, int(job["_row_id"]))
+    items = store.list_row_attachments(
+        context["billing_sheet_id"],
+        context["billing_row_id"],
+    )
+    match = next(
+        (
+            item for item in items
+            if str(item.get("name", "")).strip() == filename
+        ),
+        None,
+    )
+    if match and match.get("id"):
+        store.delete_attachment(context["billing_sheet_id"], int(match["id"]))
+
+    flash(f"{filename} removed from Billing Documents.", "success")
     return redirect(url_for("billing_detail", project_id=project_id))
 
 
@@ -1694,6 +1806,7 @@ def upload_billing_document(project_id: str):
     if not job:
         abort(404)
 
+    context = document_sheet_context(project_id, int(job["_row_id"]))
     added = 0
     for uploaded in request.files.getlist("documents"):
         if not uploaded or not uploaded.filename:
@@ -1703,13 +1816,12 @@ def upload_billing_document(project_id: str):
         if not data:
             continue
         store.attach_file_to_row(
-            FIELD_SHEET_ID,
-            int(job["_row_id"]),
+            context["billing_sheet_id"],
+            context["billing_row_id"],
             filename=filename,
             mime_type=uploaded.mimetype or "application/octet-stream",
             data=data,
         )
-        select_billing_document(project_id, filename, source="billing-upload")
         added += 1
 
     flash(f"{added} billing document(s) uploaded.", "success")
