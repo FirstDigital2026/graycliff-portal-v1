@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 import hmac
+import html
+import mimetypes
+import zipfile
+from email import policy
+from email.parser import BytesParser
 import os
 import secrets
 import sqlite3
@@ -1602,13 +1607,14 @@ def review_work_order(project_id: str):
             missing.append("market")
         if not values["Task Name"]:
             missing.append("task name")
-        if not values["Assigned Technician"]:
-            missing.append("assigned technician")
         if missing:
             flash("Cannot release to field. Missing: " + ", ".join(missing) + ".", "error")
             return redirect(url_for("office_work_order_detail", project_id=project_id))
-        values.update({"Status": "Assigned", "Office Review Status": "Approved"})
-        message = "Job approved, field documents synced, and released to the technician."
+        values.update({
+            "Status": "Assigned" if values["Assigned Technician"] else "Unassigned",
+            "Office Review Status": "Approved",
+        })
+        message = "Job approved, field documents synced, and released to the market job pool."
     elif action == "hold":
         reason = request.form.get("hold_reason", "").strip()
         if reason:
@@ -1900,13 +1906,10 @@ def upload_billing_document(project_id: str):
     return redirect(url_for("billing_detail", project_id=project_id))
 
 
-@app.route("/attachments/<int:sheet_id>/<int:row_id>/<path:filename>")
-@require_login
-def attachment_download(sheet_id: int, row_id: int, filename: str):
-    # Resolve the attachment fresh from the row every time. Smartsheet
-    # attachment IDs can become stale after a row/file is replaced or copied.
+
+def _resolve_attachment(sheet_id: int, row_id: int, filename: str) -> dict[str, Any] | None:
     attachments = store.list_row_attachments(sheet_id, row_id)
-    match = next(
+    return next(
         (
             item
             for item in attachments
@@ -1914,6 +1917,145 @@ def attachment_download(sheet_id: int, row_id: int, filename: str):
         ),
         None,
     )
+
+
+def _plain_email_preview(data: bytes) -> str:
+    message = BytesParser(policy=policy.default).parsebytes(data)
+    parts = [
+        f"From: {message.get('From', '')}",
+        f"To: {message.get('To', '')}",
+        f"Date: {message.get('Date', '')}",
+        f"Subject: {message.get('Subject', '')}",
+        "",
+    ]
+    body = message.get_body(preferencelist=("plain",))
+    if body:
+        try:
+            parts.append(body.get_content())
+        except Exception:
+            parts.append("")
+    return "\n".join(parts)
+
+
+@app.route("/attachments/preview/<int:sheet_id>/<int:row_id>/<path:filename>")
+@require_login
+def attachment_preview(sheet_id: int, row_id: int, filename: str):
+    match = _resolve_attachment(sheet_id, row_id, filename)
+    if not match:
+        flash("That file is no longer attached to this job. Refresh the page.", "error")
+        return redirect(request.referrer or url_for("office_work_orders"))
+
+    try:
+        data, current_name, mime = store.download_attachment(
+            sheet_id,
+            int(match["id"]),
+        )
+    except SmartsheetError:
+        flash("Smartsheet could not open that file. Refresh the page and try again.", "error")
+        return redirect(request.referrer or url_for("office_work_orders"))
+
+    lower = current_name.lower()
+    guessed = mime or mimetypes.guess_type(current_name)[0] or "application/octet-stream"
+
+    if guessed.startswith("image/"):
+        return send_file(
+            BytesIO(data),
+            mimetype=guessed,
+            as_attachment=False,
+            download_name=current_name,
+        )
+
+    if guessed == "application/pdf" or lower.endswith(".pdf"):
+        return send_file(
+            BytesIO(data),
+            mimetype="application/pdf",
+            as_attachment=False,
+            download_name=current_name,
+        )
+
+    if lower.endswith(".zip"):
+        try:
+            with zipfile.ZipFile(BytesIO(data)) as archive:
+                entries = [
+                    {
+                        "name": info.filename,
+                        "size": info.file_size,
+                    }
+                    for info in archive.infolist()
+                    if not info.is_dir()
+                ]
+        except Exception:
+            entries = []
+        return render_template(
+            "attachment_preview.html",
+            filename=current_name,
+            preview_type="zip",
+            entries=entries,
+            text_preview="",
+            download_url=url_for(
+                "attachment_download",
+                sheet_id=sheet_id,
+                row_id=row_id,
+                filename=filename,
+            ),
+        )
+
+    if lower.endswith(".eml") or guessed == "message/rfc822":
+        try:
+            text_preview = _plain_email_preview(data)
+        except Exception:
+            text_preview = "Email preview could not be generated."
+        return render_template(
+            "attachment_preview.html",
+            filename=current_name,
+            preview_type="text",
+            entries=[],
+            text_preview=text_preview,
+            download_url=url_for(
+                "attachment_download",
+                sheet_id=sheet_id,
+                row_id=row_id,
+                filename=filename,
+            ),
+        )
+
+    if guessed.startswith("text/") or lower.endswith((".txt", ".csv", ".log")):
+        text_preview = data.decode("utf-8", errors="replace")[:100000]
+        return render_template(
+            "attachment_preview.html",
+            filename=current_name,
+            preview_type="text",
+            entries=[],
+            text_preview=text_preview,
+            download_url=url_for(
+                "attachment_download",
+                sheet_id=sheet_id,
+                row_id=row_id,
+                filename=filename,
+            ),
+        )
+
+    return render_template(
+        "attachment_preview.html",
+        filename=current_name,
+        preview_type="unsupported",
+        entries=[],
+        text_preview="This file type cannot be previewed in the browser.",
+        download_url=url_for(
+            "attachment_download",
+            sheet_id=sheet_id,
+            row_id=row_id,
+            filename=filename,
+        ),
+    )
+
+
+@app.route("/attachments/<int:sheet_id>/<int:row_id>/<path:filename>")
+@require_login
+def attachment_download(sheet_id: int, row_id: int, filename: str):
+    # Resolve the attachment fresh from the row every time. Smartsheet
+    # attachment IDs can become stale after a row/file is replaced or copied.
+    match = _resolve_attachment(sheet_id, row_id, filename)
     if not match:
         flash("That file is no longer attached to this job. Refresh the page.", "error")
         return redirect(request.referrer or url_for("office_work_orders"))

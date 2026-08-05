@@ -48,3 +48,10 @@ button.danger{background:#fff0f0;color:#a61b1b;border:1px solid #e8b5b5}
 .document-row form{margin:0;flex:0 0 auto}
 button.compact{padding:7px 10px;font-size:12px}
 .panel h3{margin-top:24px}
+
+.document-actions-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.preview-link{font-weight:700;overflow-wrap:anywhere}
+.download-link{font-size:12px;color:#52697a}
+.text-preview{white-space:pre-wrap;word-break:break-word;max-height:70vh;overflow:auto;background:#f7fafc;padding:16px;border-radius:8px;border:1px solid #d9e4eb}
+.preview-panel table{width:100%;border-collapse:collapse}
+.preview-panel th,.preview-panel td{padding:10px;border-bottom:1px solid #d9e4eb;text-align:left}

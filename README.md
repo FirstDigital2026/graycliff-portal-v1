@@ -327,3 +327,12 @@ sheets in Smartsheet.
 The application already used a `portal_settings(key, value)` table. The prior
 registry build incorrectly queried different column names, causing the work-order
 page to return HTTP 500. The registry now uses the existing schema correctly.
+
+
+## Pool release and document previews
+
+A technician assignment is no longer required for manager approval. Approved jobs
+enter the Florence or Columbia technician job pool. Assignment remains optional.
+
+Document previews now support browser display for images and PDFs, ZIP content
+listings, and readable EML/text previews. Download remains available separately.

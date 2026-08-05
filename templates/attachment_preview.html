@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head">
+  <div><span class="eyebrow">DOCUMENT PREVIEW</span><h1>{{ filename }}</h1></div>
+  <div class="button-row"><a class="secondary" href="{{ download_url }}">Download Original</a><button class="secondary" onclick="window.close()">Close</button></div>
+</div>
+<section class="panel preview-panel">
+{% if preview_type == 'zip' %}
+  <h2>ZIP contents</h2>
+  {% if entries %}
+  <table><thead><tr><th>File</th><th>Size</th></tr></thead><tbody>
+  {% for item in entries %}<tr><td>{{ item.name }}</td><td>{{ "{:,}".format(item.size) }} bytes</td></tr>{% endfor %}
+  </tbody></table>
+  {% else %}<p>No readable files were found in this ZIP.</p>{% endif %}
+{% elif preview_type == 'text' %}
+  <pre class="text-preview">{{ text_preview }}</pre>
+{% else %}
+  <p>{{ text_preview }}</p>
+{% endif %}
+</section>
+{% endblock %}
