@@ -345,11 +345,22 @@ def sync_technician_contacts() -> dict[str, Any]:
 
 
 
+def find_sheets_by_name(name: str) -> list[dict[str, Any]]:
+    return [
+        sheet
+        for sheet in store.list_sheets()
+        if str(sheet.get("name", "")).strip() == name
+    ]
+
+
 def find_sheet_by_name(name: str) -> dict[str, Any] | None:
-    for sheet in store.list_sheets():
-        if sheet.get("name") == name:
-            return sheet
-    return None
+    matches = find_sheets_by_name(name)
+    if not matches:
+        return None
+
+    # Prefer the oldest sheet ID. The original technician sheet predates the
+    # accidental duplicates and contains the established mobile configuration.
+    return min(matches, key=lambda sheet: int(sheet.get("id", 0)))
 
 
 
@@ -449,12 +460,22 @@ def ensure_mobile_field_sheets() -> dict[str, Any]:
         created.append({"name": name, "id": sheet_id})
         sheet_ids[name] = sheet_id
 
+    duplicate_counts = {
+        name: max(0, len(find_sheets_by_name(name)) - 1)
+        for name in (FLORENCE_MOBILE_SHEET, COLUMBIA_MOBILE_SHEET)
+    }
+    duplicate_total = sum(duplicate_counts.values())
+
     return {
         "ok": True,
         "created": created,
         "existing": existing,
         "sheet_ids": sheet_ids,
-        "message": f"Created {len(created)} mobile sheet(s); {len(existing)} already existed.",
+        "duplicate_counts": duplicate_counts,
+        "message": (
+            f"Created {len(created)} mobile sheet(s); {len(existing)} already existed. "
+            f"Detected {duplicate_total} duplicate mobile sheet(s); no new duplicates will be created."
+        ),
     }
 
 

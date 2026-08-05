@@ -177,3 +177,14 @@ work-order number, PRISM ID, job address, city, and estimated completion date.
 It does not import PO numbers, PO amounts, rates, quantities, or any dollar values.
 Forwarded subject text is no longer used as Task Name. Revisions preserve status
 and assignment.
+
+
+## Duplicate mobile-sheet fix
+
+The prior sheet lookup requested only the first 100 sheets in the Smartsheet
+account. Once the account contained more than 100 sheets, the existing Florence
+and Columbia technician sheets were not always returned. The 15-minute sync then
+incorrectly created another sheet.
+
+This version requests all sheets and always reuses the oldest matching Florence
+and Columbia technician sheets. It detects duplicates but does not delete them.

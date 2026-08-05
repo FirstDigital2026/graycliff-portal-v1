@@ -125,7 +125,10 @@ class SmartsheetClient:
         return result.get("result", result)
 
     def list_sheets(self) -> list[dict[str, Any]]:
-        payload = self._request("GET", "/sheets", query={"pageSize": 100})
+        # The account has more than 100 sheets. The old call only returned the
+        # first page, so existing technician sheets could fall outside the
+        # result set and be recreated on every scheduled sync.
+        payload = self._request("GET", "/sheets", query={"includeAll": "true"})
         return payload.get("data", [])
 
     def create_sheet_in_workspace(self, workspace_id: int, body: dict[str, Any]) -> dict[str, Any]:
