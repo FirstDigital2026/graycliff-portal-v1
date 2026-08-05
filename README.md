@@ -216,3 +216,15 @@ The importer now processes only unread messages in the shared mailbox Inbox.
 - To retry any message, move it back to Inbox and mark it unread.
 - A prior imported_mail database record does not block an unread Inbox retry.
 - Outlook deletion or folder movement never deletes or changes the Smartsheet job.
+
+
+## Inbox-as-queue import
+
+Read/unread state is no longer used. The shared mailbox Inbox itself is the queue.
+
+- Every Inbox message is examined.
+- Success moves to Imported.
+- Recognized failure moves to Import Failed.
+- Unsupported format moves to Manual Review.
+- Moving any email back to Inbox retries it, even if it is already read or was
+  previously recorded in the database.

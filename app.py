@@ -630,8 +630,8 @@ def import_graycliff_mailbox() -> dict[str, Any]:
         if not message_id:
             continue
 
-        # Inbox + unread is the retry switch. A prior database record does not
-        # block an email that a manager moved back to Inbox and marked unread.
+        # Inbox is the processing queue. Moving a message back to Inbox is the
+        # retry switch; read/unread state and prior database records do not block it.
         parsed = parse_recognized_ntp(message)
         if not parsed:
             stats["ignored"] += 1

@@ -127,12 +127,11 @@ def access_token() -> str:
     return str(token)
 
 
-def list_recent_messages(token: str, *, top: int = 30) -> list[dict[str, Any]]:
+def list_recent_messages(token: str, *, top: int = 100) -> list[dict[str, Any]]:
     user = urllib.parse.quote(mailbox())
     query = urllib.parse.urlencode(
         {
             "$top": str(top),
-            "$filter": "isRead eq false",
             "$orderby": "receivedDateTime desc",
             "$select": "id,subject,receivedDateTime,body,bodyPreview,hasAttachments,internetMessageId,isRead",
         }
