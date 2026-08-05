@@ -30,7 +30,8 @@
   </p>
   <p>Only recognized Graycliff NTP emails are created automatically. PO numbers and dollar amounts are never written into the job workflow. Successful imports move to Imported. Recognized emails that fail move to Import Failed. Unrecognized emails stay in Inbox for manual entry.</p>
   {% if role == 'admin' %}
-  <form method="post" action="{{ url_for('admin_import_graycliff_mail') }}">
+  <p><a class="secondary" href="{{ url_for('admin_mailbox_diagnostics') }}">Mailbox Diagnostics</a></p>
+<form method="post" action="{{ url_for('admin_import_graycliff_mail') }}">
     <button class="primary">Import Graycliff Jobs Now</button>
   </form>
   {% endif %}

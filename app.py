@@ -40,6 +40,7 @@ from graph_import import (
     mark_message_read as graph_mark_message_read,
     mailbox as graph_mailbox,
     parse_recognized_ntp,
+    mailbox_diagnostics as graph_mailbox_diagnostics,
     enrich_ntp_from_attachments,
 )
 
@@ -1216,6 +1217,19 @@ def create_work_order():
             flash(f"Unable to create job: {exc}", "error")
 
     return render_template("create_work_order.html", technicians=technicians)
+
+
+
+@app.route("/admin/mailbox-diagnostics")
+@roles("admin")
+def admin_mailbox_diagnostics():
+    try:
+        token = graph_access_token()
+        details = graph_mailbox_diagnostics(token)
+        return render_template("mailbox_diagnostics.html", details=details)
+    except Exception as exc:
+        flash(f"Mailbox diagnostics failed: {exc}", "error")
+        return redirect(url_for("dashboard"))
 
 
 @app.route("/admin/import-graycliff-mail", methods=["POST"])

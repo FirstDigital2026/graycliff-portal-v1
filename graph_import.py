@@ -424,6 +424,55 @@ def move_message(token: str, message_id: str, destination_folder_id: str) -> Non
     )
 
 
+
+def mailbox_diagnostics(token: str) -> dict[str, Any]:
+    user = urllib.parse.quote(mailbox())
+
+    folders_result = _request(
+        "GET",
+        f"{GRAPH_ROOT}/users/{user}/mailFolders?$top=100&includeHiddenFolders=true",
+        token=token,
+    )
+    folders = folders_result.get("value", []) if isinstance(folders_result, dict) else []
+
+    inbox_result = _request(
+        "GET",
+        (
+            f"{GRAPH_ROOT}/users/{user}/mailFolders/inbox/messages"
+            "?$top=25&$orderby=receivedDateTime%20desc"
+            "&$select=id,subject,receivedDateTime,isRead,parentFolderId,hasAttachments"
+        ),
+        token=token,
+    )
+    inbox_messages = inbox_result.get("value", []) if isinstance(inbox_result, dict) else []
+
+    all_result = _request(
+        "GET",
+        (
+            f"{GRAPH_ROOT}/users/{user}/messages"
+            "?$top=25&$orderby=receivedDateTime%20desc"
+            "&$select=id,subject,receivedDateTime,isRead,parentFolderId,hasAttachments"
+        ),
+        token=token,
+    )
+    all_messages = all_result.get("value", []) if isinstance(all_result, dict) else []
+
+    return {
+        "mailbox": mailbox(),
+        "folders": [
+            {
+                "id": f.get("id"),
+                "displayName": f.get("displayName"),
+                "totalItemCount": f.get("totalItemCount"),
+                "unreadItemCount": f.get("unreadItemCount"),
+            }
+            for f in folders
+        ],
+        "inbox_messages": inbox_messages,
+        "all_messages": all_messages,
+    }
+
+
 def attachment_bytes(item: dict[str, Any]) -> tuple[str, str, bytes] | None:
     if item.get("@odata.type") != "#microsoft.graph.fileAttachment":
         return None
