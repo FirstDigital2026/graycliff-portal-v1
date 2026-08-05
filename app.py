@@ -1274,6 +1274,7 @@ def office_work_order_detail(project_id: str):
         discussions=discussions,
         billing=billing,
         technicians=active_technicians(),
+        field_sheet_id=FIELD_SHEET_ID,
     )
 
 
@@ -1412,14 +1413,39 @@ def billing_detail(project_id: str):
     attachments = (
         store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"]) if job else []
     )
-    return render_template("billing_detail.html", billing=row, job=job, attachments=attachments)
+    return render_template("billing_detail.html", billing=row, job=job, attachments=attachments, field_sheet_id=FIELD_SHEET_ID)
 
 
-@app.route("/attachments/<int:attachment_id>")
+@app.route("/attachments/<int:sheet_id>/<int:row_id>/<path:filename>")
 @require_login
-def attachment_download(attachment_id: int):
-    data, filename, mime = store.download_attachment(attachment_id)
-    return send_file(BytesIO(data), mimetype=mime, as_attachment=True, download_name=filename)
+def attachment_download(sheet_id: int, row_id: int, filename: str):
+    # Resolve the attachment fresh from the row every time. Smartsheet
+    # attachment IDs can become stale after a row/file is replaced or copied.
+    attachments = store.list_row_attachments(sheet_id, row_id)
+    match = next(
+        (
+            item
+            for item in attachments
+            if str(item.get("name", "")).strip() == filename.strip()
+        ),
+        None,
+    )
+    if not match:
+        flash("That file is no longer attached to this job. Refresh the page.", "error")
+        return redirect(request.referrer or url_for("office_work_orders"))
+
+    try:
+        data, current_name, mime = store.download_attachment(int(match["id"]))
+    except SmartsheetError:
+        flash("Smartsheet could not open that file. Refresh the page and try again.", "error")
+        return redirect(request.referrer or url_for("office_work_orders"))
+
+    return send_file(
+        BytesIO(data),
+        mimetype=mime,
+        as_attachment=True,
+        download_name=current_name,
+    )
 
 
 @app.route("/customer/jobs")

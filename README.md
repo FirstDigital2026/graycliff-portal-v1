@@ -238,3 +238,10 @@ There is no Manual Review folder.
 - Recognized messages that fail move to Import Failed.
 - Unsupported or unrecognized formats also move to Import Failed.
 - Outlook folder cleanup never deletes or changes the Smartsheet job.
+
+
+## Attachment download fix
+
+Attachment links now resolve the current file from the Smartsheet row by filename
+before downloading. This avoids 404 errors caused by stale Smartsheet attachment IDs
+after rows or files are replaced, copied, or refreshed.

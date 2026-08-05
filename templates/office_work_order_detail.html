@@ -86,7 +86,7 @@
   <p class="muted">These attachments copy to the technician sheet only after manager approval.</p>
   <div class="file-list">
   {% for f in attachments %}
-    <a href="{{ url_for('attachment_download', attachment_id=f.id) }}">{{ f.name }}</a>
+    <a href="{{ url_for('attachment_download', sheet_id=field_sheet_id, row_id=job._row_id, filename=f.name) }}">{{ f.name }}</a>
   {% else %}
     <p class="empty">No field documents attached.</p>
   {% endfor %}

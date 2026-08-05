@@ -20,7 +20,7 @@
   <h2>Field package</h2>
   <p><strong>Work performed:</strong> {{billing.get('Work Performed','')}}</p>
   {% if job %}<p><strong>CRQ:</strong> {{job.get('CRQ Number','')}} · <strong>Type:</strong> {{job.get('Job Type','')}}</p>{% endif %}
-  <div class="file-list">{% for f in attachments %}<a href="{{url_for('attachment_download',attachment_id=f.id)}}">{{f.name}}</a>{% else %}<p class="empty">No field attachments.</p>{% endfor %}</div>
+  <div class="file-list">{% for f in attachments %}<a href="{{ url_for('attachment_download', sheet_id=field_sheet_id, row_id=job._row_id, filename=f.name) }}">{{f.name}}</a>{% else %}<p class="empty">No field attachments.</p>{% endfor %}</div>
   <div class="callout">Rate-card calculation, Zoho invoice creation, and billing-package generation are the next integration layer. This screen is already separated from technician operations.</div>
 </section>
 </div>
