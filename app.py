@@ -56,6 +56,8 @@ PAYMENT_MATCHES_SHEET_ID = 435877095362436
 FIELD_DOCUMENTS_SHEET_NAME = "Graycliff Field Documents"
 BILLING_DOCUMENTS_SHEET_NAME = "Graycliff Billing Documents"
 
+_DOCUMENT_SHEET_LOCK = threading.RLock()
+
 ASSIGNED_TECH_COLUMN_ID = 7656679053496196
 
 FLORENCE_MOBILE_SHEET = "Florence Technician Jobs"
@@ -452,15 +454,62 @@ def document_sheet_definition(name: str) -> dict[str, Any]:
     }
 
 
+def _get_portal_setting(key: str) -> str:
+    with db() as connection:
+        row = connection.execute(
+            "SELECT setting_value FROM portal_settings WHERE setting_key=?",
+            (key,),
+        ).fetchone()
+    return str(row["setting_value"]) if row else ""
+
+
+def _set_portal_setting(key: str, value: str) -> None:
+    with db() as connection:
+        connection.execute(
+            """
+            INSERT OR REPLACE INTO portal_settings(
+                setting_key, setting_value, updated_at
+            ) VALUES(?,?,?)
+            """,
+            (
+                key,
+                value,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+
+
 def ensure_document_sheet(name: str) -> int:
-    sheet = find_sheet_by_name(name)
-    if sheet and sheet.get("id"):
-        return int(sheet["id"])
-    created = store.create_sheet_in_workspace(
-        WORKSPACE_ID,
-        document_sheet_definition(name),
-    )
-    return int(created["id"])
+    setting_key = "document_sheet_id:" + name.lower().replace(" ", "_")
+
+    # A persistent registry avoids relying on Smartsheet's eventually consistent
+    # sheet listing every time a job page or scheduled sync runs.
+    registered = _get_portal_setting(setting_key)
+    if registered.isdigit():
+        return int(registered)
+
+    with _DOCUMENT_SHEET_LOCK:
+        # Another request in this process may have created/registered it while
+        # this request was waiting for the lock.
+        registered = _get_portal_setting(setting_key)
+        if registered.isdigit():
+            return int(registered)
+
+        matches = find_sheets_by_name(name)
+        if matches:
+            # Reuse the oldest existing sheet and ignore accidental duplicates.
+            sheet_id = int(
+                min(matches, key=lambda sheet: int(sheet.get("id", 0)))["id"]
+            )
+        else:
+            created = store.create_sheet_in_workspace(
+                WORKSPACE_ID,
+                document_sheet_definition(name),
+            )
+            sheet_id = int(created["id"])
+
+        _set_portal_setting(setting_key, str(sheet_id))
+        return sheet_id
 
 
 def ensure_document_row(
@@ -1427,6 +1476,31 @@ def create_work_order():
 
     return render_template("create_work_order.html", technicians=technicians)
 
+
+
+
+@app.route("/admin/register-document-sheets", methods=["POST"])
+@roles("admin")
+def admin_register_document_sheets():
+    registered = []
+    for name in (FIELD_DOCUMENTS_SHEET_NAME, BILLING_DOCUMENTS_SHEET_NAME):
+        matches = find_sheets_by_name(name)
+        if not matches:
+            sheet_id = ensure_document_sheet(name)
+        else:
+            sheet_id = int(
+                min(matches, key=lambda sheet: int(sheet.get("id", 0)))["id"]
+            )
+            setting_key = "document_sheet_id:" + name.lower().replace(" ", "_")
+            _set_portal_setting(setting_key, str(sheet_id))
+        registered.append(f"{name}: {sheet_id}")
+
+    flash(
+        "Document sheets locked to the original sheets. "
+        + " | ".join(registered),
+        "success",
+    )
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/admin/mailbox-diagnostics")

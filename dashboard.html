@@ -58,4 +58,15 @@
   {% endif %}
 </section>
 
+
+{% if role == 'admin' %}
+<section class="panel">
+  <h2>Document sheet registry</h2>
+  <p>The portal reuses one permanent Field Documents sheet and one permanent Billing Documents sheet.</p>
+  <form method="post" action="{{ url_for('admin_register_document_sheets') }}">
+    <button class="secondary">Lock Portal to Original Document Sheets</button>
+  </form>
+</section>
+{% endif %}
+
 {% endblock %}

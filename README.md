@@ -306,3 +306,17 @@ Billing Documents are stored in a separate Graycliff Billing Documents sheet.
 
 Technician rows mirror only the Field Documents row after approval. Technician
 closeout attachments copy into Billing Documents, not onto the main job row.
+
+
+## Permanent document-sheet registry
+
+The document sheets are now registered by Smartsheet sheet ID in the persistent
+Render SQLite database. The portal no longer looks up or creates these sheets on
+every job-page request or scheduled sync.
+
+A process lock prevents simultaneous requests from creating the same sheet.
+When duplicates already exist, the portal registers and reuses the oldest sheet.
+
+After deployment, click **Lock Portal to Original Document Sheets** once on the
+dashboard, then delete the newer duplicate Field Documents and Billing Documents
+sheets in Smartsheet.
