@@ -188,3 +188,19 @@ incorrectly created another sheet.
 
 This version requests all sheets and always reuses the oldest matching Florence
 and Columbia technician sheets. It detects duplicates but does not delete them.
+
+
+## Manager approval gate
+
+Imported and manually created jobs are hidden from technicians until a manager
+reviews the job, edits the fields, assigns a technician, and clicks
+Approve & Release to Field.
+
+Managers can save a draft, place the job on hold, upload field documents, and add
+Smartsheet row comments. Held and unapproved jobs are removed from technician sheets.
+
+## Email retention rule
+
+Mailbox processing is one-way only. Outlook is an intake source, not the system
+of record. Deleting or moving an email in Outlook never deletes, archives, changes,
+or removes the Smartsheet work order or its copied attachments.

@@ -186,6 +186,26 @@ class SmartsheetClient:
         self.invalidate(f"sheet:{sheet_id}")
         return result
 
+
+    def add_row_comment(self, sheet_id: int, row_id: int, text: str) -> Any:
+        result = self._request(
+            "POST",
+            f"/sheets/{sheet_id}/rows/{row_id}/discussions",
+            body={"comment": {"text": text}},
+        )
+        self.invalidate(f"sheet:{sheet_id}")
+        return result.get("result", result)
+
+    def list_row_discussions(self, sheet_id: int, row_id: int) -> list[dict[str, Any]]:
+        payload = self._request(
+            "GET",
+            f"/sheets/{sheet_id}/rows/{row_id}/discussions",
+            query={"includeAll": "true"},
+        )
+        if not isinstance(payload, dict):
+            return []
+        return payload.get("data", payload.get("result", []))
+
     def update_column(self, sheet_id: int, column_id: int, body: dict[str, Any]) -> Any:
         result = self._request("PUT", f"/sheets/{sheet_id}/columns/{column_id}", body=body)
         self.invalidate(f"sheet:{sheet_id}")

@@ -20,3 +20,15 @@ button,.primary,.secondary,.danger{display:inline-block;border-radius:8px;paddin
 .form-grid input,.form-grid select,.form-grid textarea{padding:11px;border:1px solid #cbd7df;border-radius:7px;font:inherit}
 .form-grid .full{grid-column:1/-1}
 @media(max-width:760px){.form-grid{grid-template-columns:1fr}}
+
+.status-chip{display:inline-block;padding:6px 10px;border-radius:999px;font-weight:800;margin-top:8px}
+.status-chip.success{background:#e6f6ec;color:#166534}
+.status-chip.warning{background:#fff4d6;color:#8a5700}
+.status-chip.danger{background:#fde8e8;color:#a61b1b}
+.button-row{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+button.danger{background:#fff0f0;color:#a61b1b;border:1px solid #e8b5b5}
+.file-list{display:flex;flex-direction:column;gap:8px}
+.file-list a{padding:10px;border:1px solid #cbdce7;border-radius:7px;background:#eef7fc}
+.comment{padding:10px;border-bottom:1px solid #dde7ed}
+.comment p{margin:4px 0 0}
+.lower-panels{margin-top:18px}

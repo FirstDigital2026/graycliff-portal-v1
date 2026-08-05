@@ -1,34 +1,124 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="page-head">
-  <div><span class="eyebrow">WORK ORDER</span><h1>{{job.get('Project ID')}}</h1><p>{{job.get('Task Name')}} · {{job.get('Address')}} {{job.get('City')}}</p></div>
-  <a class="secondary" href="{{url_for('office_work_orders')}}">Back</a>
+  <div>
+    <span class="eyebrow">MANAGER FIELD RELEASE</span>
+    <h1>{{ job.get('Project ID') }}</h1>
+    <p>{{ job.get('Task Name') }} · {{ job.get('Address') }} {{ job.get('City') }}</p>
+    {% if job.get('Office Review Status') == 'Approved' %}
+      <span class="status-chip success">Released to field</span>
+    {% elif job.get('Office Review Status') == 'Missing Documents' %}
+      <span class="status-chip danger">On hold — field cannot see</span>
+    {% else %}
+      <span class="status-chip warning">Manager review required — field cannot see</span>
+    {% endif %}
+  </div>
+  <a class="secondary" href="{{ url_for('office_work_orders') }}">Back</a>
 </div>
+
+<form method="post" action="{{ url_for('review_work_order', project_id=job.get('Project ID')) }}">
 <div class="two-col">
 <section class="panel">
-  <h2>Field information</h2>
-  <dl class="detail-grid">
-    {% for label in ['Market','Job Type','CRQ Number','Priority','Assigned Technician','Status','Due Date','Date Started','Date Field Completed'] %}
-      <div><dt>{{label}}</dt><dd>{{job.get(label,'')}}</dd></div>
-    {% endfor %}
-  </dl>
-  <h3>Work Performed</h3><p class="note">{{job.get('Work Performed','—')}}</p>
-  <h3>Manager Notes</h3><p class="note">{{job.get('Manager Notes','—')}}</p>
+  <h2>Edit job before release</h2>
+  <div class="form-grid">
+    <label>Market
+      <select name="market">
+        <option value="">Select market</option>
+        <option value="Florence" {% if job.get('Market') == 'Florence' %}selected{% endif %}>Florence</option>
+        <option value="Columbia" {% if job.get('Market') == 'Columbia' %}selected{% endif %}>Columbia</option>
+      </select>
+    </label>
+    <label>Job Type
+      <select name="job_type">
+        <option {% if job.get('Job Type') == 'Standard' %}selected{% endif %}>Standard</option>
+        <option {% if job.get('Job Type') == 'Night Cut' %}selected{% endif %}>Night Cut</option>
+      </select>
+    </label>
+    <label class="full">Task Name
+      <input name="task_name" value="{{ job.get('Task Name','') }}">
+    </label>
+    <label class="full">Address
+      <input name="address" value="{{ job.get('Address','') }}">
+    </label>
+    <label>City
+      <input name="city" value="{{ job.get('City','') }}">
+    </label>
+    <label>Due Date
+      <input type="date" name="due_date" value="{{ job.get('Due Date','') }}">
+    </label>
+    <label>Priority
+      <select name="priority">
+        {% for p in ['Low','Normal','High','Urgent'] %}
+        <option {% if job.get('Priority') == p %}selected{% endif %}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Assigned Technician
+      <select name="assigned_technician">
+        <option value="">Unassigned</option>
+        {% for tech in technicians %}
+        <option value="{{ tech.email }}" {% if job.get('Assigned Technician') == tech.email %}selected{% endif %}>
+          {{ tech.name }}{% if tech.market %} · {{ tech.market }}{% endif %}
+        </option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>CRQ Number
+      <input name="crq_number" value="{{ job.get('CRQ Number','') }}">
+    </label>
+    <label class="full">Customer Notes
+      <textarea name="customer_notes" rows="3">{{ job.get('Customer Notes','') }}</textarea>
+    </label>
+    <label class="full">Manager Notes / Hold Reason
+      <textarea name="manager_notes" rows="4">{{ job.get('Manager Notes','') }}</textarea>
+    </label>
+  </div>
+
+  <div class="button-row">
+    <button name="action" value="save" class="secondary">Save Draft</button>
+    <button name="action" value="hold" class="danger">Put On Hold</button>
+    <button name="action" value="approve" class="primary">Approve & Release to Field</button>
+  </div>
 </section>
+
 <section class="panel">
-  <h2>Required documents</h2>
-  <div class="check-row"><span>Field File</span><strong>{{'Complete' if job.get('Field File Complete') else 'Missing'}}</strong></div>
-  <div class="check-row"><span>Required Photos</span><strong>{{'Complete' if job.get('Required Photos Complete') else 'Missing'}}</strong></div>
+  <h2>Field documents</h2>
+  <p class="muted">These attachments copy to the technician sheet only after manager approval.</p>
   <div class="file-list">
   {% for f in attachments %}
-    <a href="{{url_for('attachment_download',attachment_id=f.id)}}">{{f.name}}</a>
-  {% else %}<p class="empty">No row attachments.</p>{% endfor %}
+    <a href="{{ url_for('attachment_download', attachment_id=f.id) }}">{{ f.name }}</a>
+  {% else %}
+    <p class="empty">No field documents attached.</p>
+  {% endfor %}
   </div>
-  <form method="post" action="{{url_for('review_work_order',project_id=job.get('Project ID'))}}" class="button-row">
-    <button name="action" value="missing" class="danger">Missing Documents</button>
-    <button name="action" value="approve" class="primary">Approve for Office</button>
+</section>
+</div>
+</form>
+
+<div class="two-col lower-panels">
+<section class="panel">
+  <h2>Add field documents</h2>
+  <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_work_order_document', project_id=job.get('Project ID')) }}">
+    <input type="file" name="documents" multiple required>
+    <button class="primary">Upload Documents</button>
   </form>
-  {% if billing %}<p class="callout">Billing record: {{billing.get('Billing Status','Review')}}</p>{% endif %}
+</section>
+
+<section class="panel">
+  <h2>Comments</h2>
+  <div class="comment-list">
+    {% for discussion in discussions %}
+      {% for comment in discussion.get('comments', []) %}
+        <div class="comment"><strong>{{ comment.get('createdBy',{}).get('name','') }}</strong><p>{{ comment.get('text','') }}</p></div>
+      {% endfor %}
+    {% else %}
+      <p class="empty">No comments yet.</p>
+    {% endfor %}
+  </div>
+  <form method="post" action="{{ url_for('add_work_order_comment', project_id=job.get('Project ID')) }}">
+    <textarea name="comment" rows="3" placeholder="Add manager comment or technician instruction"></textarea>
+    <button class="primary">Add Comment</button>
+  </form>
 </section>
 </div>
 {% endblock %}

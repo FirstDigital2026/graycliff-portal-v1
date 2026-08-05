@@ -24,6 +24,7 @@ from flask import (
     url_for,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 from smartsheet_api import SmartsheetClient, SmartsheetError, rows_as_records
 from graph_import import (
@@ -604,6 +605,7 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
         "Assigned Technician": values.get("Assigned Technician", ""),
         "Priority": str(values.get("Priority", "Normal")).strip() or "Normal",
         "Status": str(values.get("Status", "Unassigned")).strip() or "Unassigned",
+        "Office Review Status": str(values.get("Office Review Status", "Not Ready")).strip() or "Not Ready",
         "Customer Notes": str(values.get("Customer Notes", "")).strip(),
     }
     row = store.add_row(FIELD_SHEET_ID, clean)
@@ -672,6 +674,7 @@ def import_graycliff_mailbox() -> dict[str, Any]:
                         "Project ID": project_id,
                         **source_values,
                         "Status": "Unassigned",
+                        "Office Review Status": "Not Ready",
                     }
                 )
                 target_row_id = int(created["row"].get("id"))
@@ -766,15 +769,38 @@ def sync_mobile_field_sheets() -> dict[str, Any]:
             else COLUMBIA_MOBILE_SHEET if market == "Columbia"
             else ""
         )
-        if not target_name:
+        approved_for_field = str(master.get("Office Review Status", "")).strip() == "Approved"
+
+        # Remove the job from every technician sheet when not approved, held,
+        # moved to another market, archived, or closed.
+        located_mobile = None
+        for sheet_name, rows_by_project in mobile_by_project_by_sheet.items():
+            candidate = rows_by_project.get(project_id)
+            if not candidate:
+                continue
+            should_remove = (
+                not approved_for_field
+                or sheet_name != target_name
+                or bool(master.get("Archived"))
+                or str(master.get("Status", "")).strip() in {"Closed", "Missing Documents", "On Hold"}
+            )
+            if should_remove:
+                store.delete_row(mobile_ids[sheet_name], int(candidate["_row_id"]))
+                stats["archived_rows"] += 1
+            elif sheet_name == target_name:
+                located_mobile = candidate
+
+        if not approved_for_field or not target_name:
             continue
 
         target_id = mobile_ids[target_name]
         target_rows = mobile_by_project_by_sheet[target_name]
-        mobile = target_rows.get(project_id)
+        mobile = located_mobile or target_rows.get(project_id)
 
-        # Archived or closed jobs do not stay in the technician sheets.
-        should_hide = bool(master.get("Archived")) or str(master.get("Status", "")).strip() == "Closed"
+        should_hide = (
+            bool(master.get("Archived"))
+            or str(master.get("Status", "")).strip() in {"Closed", "Missing Documents", "On Hold"}
+        )
         if should_hide:
             if mobile:
                 store.delete_row(target_id, int(mobile["_row_id"]))
@@ -1209,35 +1235,117 @@ def office_work_order_detail(project_id: str):
     if not job:
         abort(404)
     attachments = store.list_row_attachments(FIELD_SHEET_ID, job["_row_id"])
+    try:
+        discussions = store.list_row_discussions(FIELD_SHEET_ID, job["_row_id"])
+    except Exception:
+        discussions = []
     billing = by_project(record_map(BILLING_SHEET_ID)).get(project_id)
     return render_template(
         "office_work_order_detail.html",
         job=job,
         attachments=attachments,
+        discussions=discussions,
         billing=billing,
+        technicians=active_technicians(),
     )
 
 
 @app.route("/office/work-orders/<project_id>/review", methods=["POST"])
 @roles("admin", "office")
 def review_work_order(project_id: str):
-    jobs = by_project(record_map(FIELD_SHEET_ID, force=True))
-    job = jobs.get(project_id)
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
     if not job:
         abort(404)
 
-    action = request.form.get("action")
-    if action == "approve":
-        values = {"Status": "Office Approved", "Office Review Status": "Approved"}
-    elif action == "missing":
-        values = {"Status": "Missing Documents", "Office Review Status": "Missing Documents"}
-    else:
-        abort(400)
+    action = request.form.get("action", "save")
+    values = {
+        "Market": request.form.get("market", "").strip(),
+        "Task Name": request.form.get("task_name", "").strip(),
+        "Address": request.form.get("address", "").strip(),
+        "City": request.form.get("city", "").strip(),
+        "Job Type": request.form.get("job_type", "Standard").strip(),
+        "CRQ Number": request.form.get("crq_number", "").strip(),
+        "Priority": request.form.get("priority", "Normal").strip(),
+        "Due Date": request.form.get("due_date", "").strip(),
+        "Assigned Technician": request.form.get("assigned_technician", "").strip(),
+        "Manager Notes": request.form.get("manager_notes", "").strip(),
+        "Customer Notes": request.form.get("customer_notes", "").strip(),
+    }
 
-    store.update_row(FIELD_SHEET_ID, job["_row_id"], values)
-    sync_billing_queue()
-    log_action("Review Work Order", "project", project_id, action)
-    flash("Work order updated.", "success")
+    if action == "approve":
+        missing = []
+        if not values["Market"]:
+            missing.append("market")
+        if not values["Task Name"]:
+            missing.append("task name")
+        if not values["Assigned Technician"]:
+            missing.append("assigned technician")
+        if missing:
+            flash("Cannot release to field. Missing: " + ", ".join(missing) + ".", "error")
+            return redirect(url_for("office_work_order_detail", project_id=project_id))
+        values.update({"Status": "Assigned", "Office Review Status": "Approved"})
+        message = "Job approved and released to the technician."
+    elif action == "hold":
+        reason = request.form.get("hold_reason", "").strip()
+        if reason:
+            values["Manager Notes"] = reason
+        values.update({"Status": "Missing Documents", "Office Review Status": "Missing Documents"})
+        message = "Job placed on hold and hidden from technicians."
+    else:
+        values.update({"Office Review Status": "Not Ready"})
+        message = "Manager changes saved. Job remains hidden from technicians."
+
+    store.update_row(FIELD_SHEET_ID, int(job["_row_id"]), values)
+    sync_mobile_field_sheets()
+    log_action("Manager Review", "project", project_id, action)
+    flash(message, "success")
+    return redirect(url_for("office_work_order_detail", project_id=project_id))
+
+
+@app.route("/office/work-orders/<project_id>/upload", methods=["POST"])
+@roles("admin", "office")
+def upload_work_order_document(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
+    added = 0
+    for uploaded in request.files.getlist("documents"):
+        if not uploaded or not uploaded.filename:
+            continue
+        filename = secure_filename(uploaded.filename)
+        data = uploaded.read()
+        if not data:
+            continue
+        mime_type = uploaded.mimetype or "application/octet-stream"
+        store.attach_file_to_row(
+            FIELD_SHEET_ID,
+            int(job["_row_id"]),
+            filename=filename,
+            mime_type=mime_type,
+            data=data,
+        )
+        added += 1
+
+    flash(f"{added} document(s) added to the field documents.", "success")
+    return redirect(url_for("office_work_order_detail", project_id=project_id))
+
+
+@app.route("/office/work-orders/<project_id>/comment", methods=["POST"])
+@roles("admin", "office")
+def add_work_order_comment(project_id: str):
+    job = by_project(record_map(FIELD_SHEET_ID, force=True)).get(project_id)
+    if not job:
+        abort(404)
+
+    comment = request.form.get("comment", "").strip()
+    if not comment:
+        flash("Enter a comment first.", "error")
+        return redirect(url_for("office_work_order_detail", project_id=project_id))
+
+    author = session.get("user_email", "Office")
+    store.add_row_comment(FIELD_SHEET_ID, int(job["_row_id"]), f"{author}: {comment}")
+    flash("Comment added.", "success")
     return redirect(url_for("office_work_order_detail", project_id=project_id))
 
 
