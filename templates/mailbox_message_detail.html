@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="page-head"><div><span class="eyebrow">MAILBOX REVIEW</span><h1>{{message.get('subject') or '(No subject)'}}</h1></div><a class="secondary" href="{{url_for('dashboard')}}">Back</a></div>
+<section class="panel">
+  <p><strong>From:</strong> {{(((message.get('from') or {}).get('emailAddress') or {}).get('address')) or 'Unknown'}}</p>
+  <p><strong>Received:</strong> {{message.get('receivedDateTime','')|replace('T',' ')|replace('Z',' UTC')}}</p>
+  <p><strong>Conversation ID:</strong> <code>{{message.get('conversationId','')}}</code></p>
+  <h2>Message</h2>
+  <div class="mail-body">{{((message.get('body') or {}).get('content')) or message.get('bodyPreview','')|safe}}</div>
+  <h2>Attachments</h2>
+  {% if attachment_names %}<ul>{% for name in attachment_names %}<li>{{name}}</li>{% endfor %}</ul>{% else %}<p>No attachments.</p>{% endif %}
+</section>
+{% endblock %}

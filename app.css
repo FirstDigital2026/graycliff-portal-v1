@@ -64,3 +64,4 @@ button.compact{padding:7px 10px;font-size:12px}
 .failed-import-main{display:flex;flex-direction:column;gap:5px;min-width:0}.failed-import-main strong{color:#8f1d14;overflow-wrap:anywhere}.failed-import-main span{font-size:13px;color:var(--muted)}
 .failure-reason{color:#a53333!important;font-weight:700}.error-text{color:#a53333;font-weight:700}.document-breakdown{font-size:12px;color:var(--muted);font-weight:600}
 @media(max-width:700px){.failed-import-item{align-items:flex-start;flex-direction:column}}
+.metric-warning{border-color:#d59b21;background:#fff9e8}.manual-review-panel{border-left:4px solid #d59b21;background:#fffdf6}.mail-actions{display:flex;gap:.5rem;align-items:center}.mail-actions form{margin:0}.mail-body{padding:1rem;border:1px solid #dbe5ec;border-radius:8px;background:#fff;overflow:auto}.failed-import-main a{text-decoration:none}.failed-import-main a:hover{text-decoration:underline}

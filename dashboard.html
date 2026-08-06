@@ -9,30 +9,52 @@
   <a class="metric" href="{{url_for('office_work_orders',status='On Hold')}}"><strong>{{metrics.on_hold}}</strong><span>On Hold</span></a>
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.ready_to_bill}}</strong><span>Ready to Bill</span></a>
   <a class="metric" href="{{url_for('billing_queue')}}"><strong>{{metrics.invoiced}}</strong><span>Invoiced / Sent</span></a>
-  <a class="metric {% if metrics.failed_imports %}metric-danger{% endif %}" href="#failed-imports"><strong>{{metrics.failed_imports}}</strong><span>Failed Email Imports</span></a>
+  <a class="metric {% if metrics.manual_reviews %}metric-warning{% endif %}" href="#manual-review"><strong>{{metrics.manual_reviews}}</strong><span>Manual Review</span></a>
+  <a class="metric {% if metrics.failed_imports %}metric-danger{% endif %}" href="#failed-imports"><strong>{{metrics.failed_imports}}</strong><span>Failed Imports</span></a>
 </div>
+
+{% if manual_reviews or manual_review_error %}
+<section class="panel manual-review-panel" id="manual-review">
+  <h2>Emails needing manual review</h2>
+  {% if manual_review_error %}<p class="error-text">The portal could not read Manual Review: {{manual_review_error}}</p>{% endif %}
+  {% if manual_reviews %}
+    <p>These are standalone emails the portal could not match to a Graycliff NTP or an existing email chain. They are not system failures.</p>
+    <div class="failed-import-list">
+    {% for item in manual_reviews %}
+      <div class="failed-import-item">
+        <div class="failed-import-main">
+          <a href="{{url_for('mailbox_message_detail', message_id=item.id)}}"><strong>{{item.subject}}</strong></a>
+          <span>{{item.received|replace('T',' ')|replace('Z',' UTC')}}{% if item.sender %} · {{item.sender}}{% endif %}</span>
+          <span>{{item.preview}}</span>
+        </div>
+        <div class="mail-actions">
+          <form method="post" action="{{url_for('retry_failed_mail', message_id=item.id)}}"><button class="primary compact">Retry</button></form>
+          <form method="post" action="{{url_for('dismiss_mail_review', message_id=item.id)}}"><button class="secondary compact">Mark Reviewed</button></form>
+        </div>
+      </div>
+    {% endfor %}
+    </div>
+  {% endif %}
+</section>
+{% endif %}
 
 {% if failed_imports or failed_import_error %}
 <section class="panel failed-import-panel" id="failed-imports">
-  <h2>Email imports requiring attention</h2>
-  {% if failed_import_error %}
-    <p class="error-text">The portal could not read the Import Failed folder: {{ failed_import_error }}</p>
-  {% endif %}
+  <h2>True import failures</h2>
+  {% if failed_import_error %}<p class="error-text">The portal could not read Import Failed: {{failed_import_error}}</p>{% endif %}
   {% if failed_imports %}
-    <p>These emails reached the Graycliff mailbox but did not create or update a job. They remain here until successfully retried.</p>
+    <p>These emails matched the import rules but hit an actual processing error.</p>
     <div class="failed-import-list">
-      {% for item in failed_imports %}
+    {% for item in failed_imports %}
       <div class="failed-import-item">
         <div class="failed-import-main">
-          <strong>{{ item.subject }}</strong>
-          <span>{{ item.received|replace('T', ' ')|replace('Z', ' UTC') }}{% if item.project_id %} · Work order {{ item.project_id }}{% endif %}</span>
-          <span class="failure-reason">{{ item.reason }}</span>
+          <a href="{{url_for('mailbox_message_detail', message_id=item.id)}}"><strong>{{item.subject}}</strong></a>
+          <span>{{item.received|replace('T',' ')|replace('Z',' UTC')}}{% if item.project_id %} · Work order {{item.project_id}}{% endif %}</span>
+          <span class="failure-reason">{{item.reason}}</span>
         </div>
-        <form method="post" action="{{ url_for('retry_failed_mail', message_id=item.id) }}">
-          <button class="primary compact">Retry Import</button>
-        </form>
+        <form method="post" action="{{url_for('retry_failed_mail', message_id=item.id)}}"><button class="primary compact">Retry Import</button></form>
       </div>
-      {% endfor %}
+    {% endfor %}
     </div>
   {% endif %}
 </section>
@@ -45,13 +67,8 @@
   <div class="hold-list">
     {% for job in on_hold_jobs %}
     <a class="hold-item" href="{{ url_for('office_work_order_detail', project_id=job.get('Project ID')) }}">
-      <div class="hold-item-top">
-        <strong>{{ job.get('Project ID') }}</strong>
-        <span>{{ job.get('Task Name') or job.get('Address') }}</span>
-      </div>
-      <div class="hold-reason">
-        {{ job.get('Manager Notes') or 'No hold reason entered.' }}
-      </div>
+      <div class="hold-item-top"><strong>{{ job.get('Project ID') }}</strong><span>{{ job.get('Task Name') or job.get('Address') }}</span></div>
+      <div class="hold-reason">{{ job.get('Manager Notes') or 'No hold reason entered.' }}</div>
     </a>
     {% endfor %}
   </div>
@@ -61,39 +78,22 @@
 <section class="panel">
   <h2>Smartsheet mobile field sheets</h2>
   <p>Technicians work from normal Smartsheet sheets with Mobile View. The cloud service keeps Florence and Columbia technician sheets synchronized with the master sheet and builds mobile-friendly Job Summary, Location, and Due / Priority fields.</p>
-  <form method="post" action="{{url_for('admin_build_mobile_field_sheets')}}">
-    <button class="primary">Build &amp; Sync Mobile Field Sheets</button>
-  </form>
+  <form method="post" action="{{url_for('admin_build_mobile_field_sheets')}}"><button class="primary">Build &amp; Sync Mobile Field Sheets</button></form>
 </section>
 <section class="panel">
   <h2>Graycliff job mailbox</h2>
-  <p>
-    Dedicated mailbox: <strong>{{ mailbox_address }}</strong><br>
-    Status:
-    {% if mailbox_configured %}
-      <strong>Connected configuration present</strong>
-    {% else %}
-      <strong>Waiting for Microsoft app credentials in Render</strong>
-    {% endif %}
-  </p>
-  <p>Only recognized Graycliff NTP emails are created automatically. PO numbers and dollar amounts are never written into the job workflow. Successful imports move to Imported. Recognized emails that fail move to Import Failed. Unrecognized emails stay in Inbox for manual entry.</p>
+  <p>Dedicated mailbox: <strong>{{ mailbox_address }}</strong><br>Status: {% if mailbox_configured %}<strong>Connected configuration present</strong>{% else %}<strong>Waiting for Microsoft app credentials in Render</strong>{% endif %}</p>
+  <p>Recognized NTPs create or revise jobs. Replies in an already imported Microsoft email chain are attached to that same job. Unmatched standalone emails go to Manual Review. Only actual processing errors go to Import Failed.</p>
   {% if role == 'admin' %}
-  <p><a class="secondary" href="{{ url_for('admin_mailbox_diagnostics') }}">Mailbox Diagnostics</a></p>
-<form method="post" action="{{ url_for('admin_import_graycliff_mail') }}">
-    <button class="primary">Import Graycliff Jobs Now</button>
-  </form>
+  <p><a class="secondary" href="{{url_for('admin_mailbox_diagnostics')}}">Mailbox Diagnostics</a></p>
+  <form method="post" action="{{url_for('admin_import_graycliff_mail')}}"><button class="primary">Import Graycliff Jobs Now</button></form>
   {% endif %}
 </section>
-
-
 {% if role == 'admin' %}
 <section class="panel">
   <h2>Document sheet registry</h2>
   <p>The portal reuses one permanent Field Documents sheet and one permanent Billing Documents sheet.</p>
-  <form method="post" action="{{ url_for('admin_register_document_sheets') }}">
-    <button class="secondary">Lock Portal to Original Document Sheets</button>
-  </form>
+  <form method="post" action="{{url_for('admin_register_document_sheets')}}"><button class="secondary">Lock Portal to Original Document Sheets</button></form>
 </section>
 {% endif %}
-
 {% endblock %}

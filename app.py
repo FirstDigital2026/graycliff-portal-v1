@@ -41,6 +41,7 @@ from graph_import import (
     list_attachments as graph_list_attachments,
     list_recent_messages as graph_list_recent_messages,
     list_folder_messages as graph_list_folder_messages,
+    get_message_details as graph_get_message_details,
     find_mail_folder_id as graph_find_mail_folder_id,
     ensure_mail_folder as graph_ensure_mail_folder,
     move_message as graph_move_message,
@@ -143,6 +144,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS imported_mail (
                 message_id TEXT PRIMARY KEY,
                 internet_message_id TEXT,
+                conversation_id TEXT,
+                sender TEXT,
                 subject TEXT NOT NULL,
                 project_id TEXT,
                 result TEXT NOT NULL,
@@ -185,6 +188,11 @@ def init_db() -> None:
                 connection.execute(
                     f"ALTER TABLE users ADD COLUMN {column_name} {definition}"
                 )
+
+        mail_columns = {row["name"] for row in connection.execute("PRAGMA table_info(imported_mail)").fetchall()}
+        for column_name, definition in {"conversation_id": "TEXT", "sender": "TEXT"}.items():
+            if column_name not in mail_columns:
+                connection.execute(f"ALTER TABLE imported_mail ADD COLUMN {column_name} {definition}")
 
         admin_email = os.getenv("ADMIN_EMAIL", "thomas@firstdigitalsc.com").strip().lower()
         admin_password = os.getenv("ADMIN_PASSWORD", "")
@@ -815,12 +823,14 @@ def _record_mail_result(
         connection.execute(
             """
             INSERT OR REPLACE INTO imported_mail(
-                message_id,internet_message_id,subject,project_id,result,imported_at
-            ) VALUES(?,?,?,?,?,?)
+                message_id,internet_message_id,conversation_id,sender,subject,project_id,result,imported_at
+            ) VALUES(?,?,?,?,?,?,?,?)
             """,
             (
                 str(message.get("id", "")),
                 str(message.get("internetMessageId", "")),
+                str(message.get("conversationId", "")),
+                str((((message.get("from") or {}).get("emailAddress") or {}).get("address", ""))),
                 str(message.get("subject", "")),
                 project_id,
                 result,
@@ -870,78 +880,94 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
 
 def import_graycliff_mailbox() -> dict[str, Any]:
     if not graph_configured():
-        return {"ok": False, "configured": False, "message": "Graycliff mailbox connection is not configured in Render.", "created": 0, "updated": 0, "ignored": 0, "failed": 0}
+        return {"ok": False, "configured": False, "message": "Graycliff mailbox connection is not configured in Render.", "created": 0, "updated": 0, "ignored": 0, "failed": 0, "replies": 0}
 
     token = graph_access_token()
     imported_folder = graph_ensure_mail_folder(token, "Imported")
     failed_folder = graph_ensure_mail_folder(token, "Import Failed")
+    manual_folder = graph_ensure_mail_folder(token, "Manual Review")
     messages = graph_list_recent_messages(token, top=40)
     existing = by_project(record_map(FIELD_SHEET_ID, force=True))
-    stats = {"created": 0, "updated": 0, "ignored": 0, "failed": 0, "attachments": 0}
+    stats = {"created": 0, "updated": 0, "ignored": 0, "failed": 0, "replies": 0, "attachments": 0}
 
     for message in reversed(messages):
         message_id = str(message.get("id", ""))
         if not message_id:
             continue
 
-        # Inbox is the processing queue. Moving a message back to Inbox is the
-        # retry switch; read/unread state and prior database records do not block it.
         parsed = parse_recognized_ntp(message)
+        message_attachments = graph_list_attachments(token, message_id) if message.get("hasAttachments") else []
+
+        # Replies in a previously imported Microsoft conversation belong to that job.
         if not parsed:
-            stats["ignored"] += 1
-            _record_mail_result(message, result="failed-unrecognized-format")
-            try:
-                graph_move_message(token, message_id, failed_folder)
-            except Exception:
+            conversation_id = str(message.get("conversationId", ""))
+            related = None
+            if conversation_id:
+                with db() as connection:
+                    related = connection.execute(
+                        """SELECT project_id FROM imported_mail
+                           WHERE conversation_id=? AND project_id<>''
+                           ORDER BY imported_at DESC LIMIT 1""",
+                        (conversation_id,),
+                    ).fetchone()
+            project_id = str(related["project_id"]) if related else ""
+            if project_id and project_id in existing:
                 try:
-                    graph_mark_message_read(token, message_id)
-                except Exception:
-                    pass
+                    target_row_id = int(existing[project_id]["_row_id"])
+                    current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
+                    for item in message_attachments:
+                        decoded = graph_attachment_bytes(item)
+                        if not decoded:
+                            continue
+                        filename, mime_type, data = decoded
+                        if filename in current_names:
+                            continue
+                        store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=filename, mime_type=mime_type, data=data)
+                        current_names.add(filename)
+                        stats["attachments"] += 1
+                    eml_name = f"Reply-{project_id}-{message_id[-8:]}.eml"
+                    if eml_name not in current_names:
+                        mime_data = get_message_mime(token, message_id)
+                        if mime_data:
+                            store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=eml_name, mime_type="message/rfc822", data=mime_data)
+                            stats["attachments"] += 1
+                    _record_mail_result(message, project_id=project_id, result="attached-reply")
+                    graph_move_message(token, message_id, imported_folder)
+                    stats["replies"] += 1
+                    continue
+                except Exception as exc:
+                    stats["failed"] += 1
+                    _record_mail_result(message, project_id=project_id, result=f"failed: reply attachment error: {str(exc)[:250]}")
+                    graph_move_message(token, message_id, failed_folder)
+                    continue
+
+            stats["ignored"] += 1
+            _record_mail_result(message, result="manual-review: unrecognized standalone email")
+            try:
+                graph_move_message(token, message_id, manual_folder)
+            except Exception:
+                graph_mark_message_read(token, message_id)
             continue
 
-        message_attachments = (
-            graph_list_attachments(token, message_id)
-            if message.get("hasAttachments")
-            else []
-        )
         parsed = enrich_ntp_from_attachments(parsed, message_attachments)
-
         project_id = parsed.work_order
         try:
             task_name = parsed.address or parsed.customer_name or f"Graycliff Work Order {project_id}"
             source_values = {
-                "Market": parsed.market,
-                "Task Name": task_name,
-                "Address": parsed.address,
-                "City": parsed.city,
-                "Job Type": "Standard",
-                "Due Date": parsed.due_date,
-                "Priority": "Normal",
-                "Customer Notes": f"PRISM {parsed.prism}" if parsed.prism else "",
+                "Market": parsed.market, "Task Name": task_name, "Address": parsed.address,
+                "City": parsed.city, "Job Type": "Standard", "Due Date": parsed.due_date,
+                "Priority": "Normal", "Customer Notes": f"PRISM {parsed.prism}" if parsed.prism else "",
             }
-
             if project_id in existing:
                 row = existing[project_id]
-                # Revisions update source data but never reset assignment or workflow status.
-                update_values = {
-                    key: value
-                    for key, value in source_values.items()
-                    if value and row.get(key, "") != value
-                }
+                update_values = {key: value for key, value in source_values.items() if value and row.get(key, "") != value}
                 if update_values:
                     store.update_row(FIELD_SHEET_ID, int(row["_row_id"]), update_values)
                 target_row_id = int(row["_row_id"])
                 stats["updated"] += 1
                 result_name = "updated-revision"
             else:
-                created = create_field_job(
-                    {
-                        "Project ID": project_id,
-                        **source_values,
-                        "Status": "Unassigned",
-                        "Office Review Status": "Not Ready",
-                    }
-                )
+                created = create_field_job({"Project ID": project_id, **source_values, "Status": "Unassigned", "Office Review Status": "Not Ready"})
                 target_row_id = int(created["row"].get("id"))
                 stats["created"] += 1
                 result_name = "created"
@@ -955,23 +981,15 @@ def import_graycliff_mailbox() -> dict[str, Any]:
                 filename, mime_type, data = decoded
                 if filename in current_names:
                     continue
-                store.attach_file_to_row(
-                    FIELD_SHEET_ID,
-                    target_row_id,
-                    filename=filename,
-                    mime_type=mime_type,
-                    data=data,
-                )
+                store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=filename, mime_type=mime_type, data=data)
                 current_names.add(filename)
                 stats["attachments"] += 1
-
             eml_name = f"NTP-{project_id}-{message_id[-8:]}.eml"
             if eml_name not in current_names:
                 mime_data = get_message_mime(token, message_id)
                 if mime_data:
                     store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=eml_name, mime_type="message/rfc822", data=mime_data)
                     stats["attachments"] += 1
-
             _record_mail_result(message, project_id=project_id, result=result_name)
             graph_move_message(token, message_id, imported_folder)
         except Exception as exc:
@@ -980,22 +998,15 @@ def import_graycliff_mailbox() -> dict[str, Any]:
             try:
                 graph_move_message(token, message_id, failed_folder)
             except Exception:
-                try:
-                    graph_mark_message_read(token, message_id)
-                except Exception:
-                    pass
+                graph_mark_message_read(token, message_id)
 
     if stats["created"] or stats["updated"]:
         sync_mobile_field_sheets()
-
-    return {
-        "ok": True, "configured": True, **stats,
-        "message": (
-            f"Mailbox import complete: {stats['created']} job(s) created, {stats['updated']} revision(s) updated, "
-            f"{stats['failed']} failed email(s) moved to Import Failed, {stats['ignored']} unrecognized email(s) moved to Manual Review, "
-            f"and {stats['attachments']} attachment(s) copied."
-        ),
-    }
+    return {"ok": True, "configured": True, **stats, "message": (
+        f"Mailbox import complete: {stats['created']} job(s) created, {stats['updated']} revision(s) updated, "
+        f"{stats['replies']} reply email(s) attached, {stats['failed']} true import failure(s), "
+        f"{stats['ignored']} email(s) moved to Manual Review, and {stats['attachments']} attachment(s) copied."
+    )}
 
 
 def sync_mobile_field_sheets() -> dict[str, Any]:
@@ -1406,26 +1417,22 @@ def logout():
     return redirect(url_for("login"))
 
 
-def failed_mailbox_items(limit: int = 50) -> tuple[list[dict[str, Any]], str]:
+def mailbox_folder_items(folder_name: str, result_prefix: str, limit: int = 50) -> tuple[list[dict[str, Any]], str]:
     if not graph_configured():
         return [], ""
     try:
         token = graph_access_token()
-        folder_id = graph_find_mail_folder_id(token, "Import Failed")
+        folder_id = graph_find_mail_folder_id(token, folder_name)
         if not folder_id:
             return [], ""
         messages = graph_list_folder_messages(token, folder_id, top=limit)
         with db() as connection:
             history = connection.execute(
-                """
-                SELECT internet_message_id, subject, project_id, result, imported_at
-                FROM imported_mail
-                WHERE result LIKE 'failed%'
-                ORDER BY imported_at DESC
-                """
+                """SELECT internet_message_id, subject, project_id, result, imported_at
+                   FROM imported_mail WHERE result LIKE ? ORDER BY imported_at DESC""",
+                (result_prefix + "%",),
             ).fetchall()
-        by_internet_id = {}
-        by_subject = {}
+        by_internet_id, by_subject = {}, {}
         for row in history:
             item = dict(row)
             if item.get("internet_message_id") and item["internet_message_id"] not in by_internet_id:
@@ -1435,17 +1442,26 @@ def failed_mailbox_items(limit: int = 50) -> tuple[list[dict[str, Any]], str]:
         results = []
         for message in messages:
             audit = by_internet_id.get(str(message.get("internetMessageId", ""))) or by_subject.get(str(message.get("subject", ""))) or {}
+            sender = ((((message.get("from") or {}).get("emailAddress") or {}).get("address")) or "")
             results.append({
-                "id": str(message.get("id", "")),
-                "subject": str(message.get("subject", "(No subject)")),
-                "received": str(message.get("receivedDateTime", "")),
-                "has_attachments": bool(message.get("hasAttachments")),
-                "project_id": str(audit.get("project_id", "")),
-                "reason": str(audit.get("result", "failed: reason unavailable")).removeprefix("failed: "),
+                "id": str(message.get("id", "")), "subject": str(message.get("subject", "(No subject)")),
+                "received": str(message.get("receivedDateTime", "")), "has_attachments": bool(message.get("hasAttachments")),
+                "project_id": str(audit.get("project_id", "")), "sender": sender,
+                "preview": str(message.get("bodyPreview", "")),
+                "reason": str(audit.get("result", result_prefix + ": reason unavailable")).split(": ", 1)[-1],
+                "folder": folder_name,
             })
         return results, ""
     except Exception as exc:
         return [], str(exc)
+
+
+def failed_mailbox_items(limit: int = 50):
+    return mailbox_folder_items("Import Failed", "failed", limit)
+
+
+def manual_review_items(limit: int = 50):
+    return mailbox_folder_items("Manual Review", "manual-review", limit)
 
 
 @app.route("/dashboard")
@@ -1466,6 +1482,7 @@ def dashboard():
         and not bool(r.get("Archived"))
     ]
     failed_imports, failed_import_error = failed_mailbox_items()
+    manual_reviews, manual_review_error = manual_review_items()
     metrics = {
         "open": sum(
             str(r.get("Status", "")) not in {"Office Approved", "Closed"}
@@ -1477,6 +1494,7 @@ def dashboard():
         "ready_to_bill": sum(str(r.get("Billing Status", "")) == "Ready to Bill" for r in billing_rows),
         "invoiced": sum(str(r.get("Billing Status", "")) in {"Invoiced", "Sent"} for r in billing_rows),
         "failed_imports": len(failed_imports),
+        "manual_reviews": len(manual_reviews),
     }
     return render_template(
         "dashboard.html",
@@ -1486,6 +1504,8 @@ def dashboard():
         mailbox_address=graph_mailbox(),
         failed_imports=failed_imports,
         failed_import_error=failed_import_error,
+        manual_reviews=manual_reviews,
+        manual_review_error=manual_review_error,
     )
 
 
@@ -1573,6 +1593,35 @@ def admin_import_graycliff_mail():
             log_action("Import Graycliff Mail", "mailbox", graph_mailbox(), str(result))
     except GraphImportError as exc:
         flash(str(exc), "error")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/admin/mailbox/message/<path:message_id>")
+@roles("admin", "office")
+def mailbox_message_detail(message_id: str):
+    try:
+        token = graph_access_token()
+        message = graph_get_message_details(token, message_id)
+        attachments = graph_list_attachments(token, message_id) if message.get("hasAttachments") else []
+        attachment_names = [str(a.get("name", "Attachment")) for a in attachments]
+        return render_template("mailbox_message_detail.html", message=message, attachment_names=attachment_names)
+    except Exception as exc:
+        flash(f"Could not open that email: {exc}", "error")
+        return redirect(url_for("dashboard"))
+
+
+@app.route("/admin/mailbox/dismiss/<path:message_id>", methods=["POST"])
+@roles("admin", "office")
+def dismiss_mail_review(message_id: str):
+    try:
+        token = graph_access_token()
+        imported_id = graph_ensure_mail_folder(token, "Imported")
+        details = graph_get_message_details(token, message_id)
+        _record_mail_result(details, result="dismissed-manual-review")
+        graph_move_message(token, message_id, imported_id)
+        flash("Email marked reviewed and removed from Manual Review.", "success")
+    except Exception as exc:
+        flash(f"Could not dismiss that email: {exc}", "error")
     return redirect(url_for("dashboard"))
 
 

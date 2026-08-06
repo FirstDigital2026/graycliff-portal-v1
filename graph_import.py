@@ -133,7 +133,7 @@ def list_recent_messages(token: str, *, top: int = 100) -> list[dict[str, Any]]:
         {
             "$top": str(top),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,receivedDateTime,body,bodyPreview,hasAttachments,internetMessageId,isRead",
+            "$select": "id,subject,receivedDateTime,body,bodyPreview,hasAttachments,internetMessageId,isRead,conversationId,from",
         }
     )
     result = _request(
@@ -142,6 +142,17 @@ def list_recent_messages(token: str, *, top: int = 100) -> list[dict[str, Any]]:
         token=token,
     )
     return result.get("value", []) if isinstance(result, dict) else []
+
+
+
+def get_message_details(token: str, message_id: str) -> dict[str, Any]:
+    user = urllib.parse.quote(mailbox())
+    mid = urllib.parse.quote(message_id, safe="")
+    query = urllib.parse.urlencode({
+        "$select": "id,subject,receivedDateTime,body,bodyPreview,hasAttachments,internetMessageId,isRead,conversationId,from,toRecipients,ccRecipients",
+    })
+    result = _request("GET", f"{GRAPH_ROOT}/users/{user}/messages/{mid}?{query}", token=token)
+    return result if isinstance(result, dict) else {}
 
 
 def list_attachments(token: str, message_id: str) -> list[dict[str, Any]]:
@@ -396,7 +407,7 @@ def list_folder_messages(token: str, folder_id: str, *, top: int = 100) -> list[
         {
             "$top": str(top),
             "$orderby": "receivedDateTime desc",
-            "$select": "id,subject,receivedDateTime,bodyPreview,hasAttachments,internetMessageId,isRead",
+            "$select": "id,subject,receivedDateTime,bodyPreview,hasAttachments,internetMessageId,isRead,conversationId,from",
         }
     )
     result = _request(
