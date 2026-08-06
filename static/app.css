@@ -65,3 +65,23 @@ button.compact{padding:7px 10px;font-size:12px}
 .failure-reason{color:#a53333!important;font-weight:700}.error-text{color:#a53333;font-weight:700}.document-breakdown{font-size:12px;color:var(--muted);font-weight:600}
 @media(max-width:700px){.failed-import-item{align-items:flex-start;flex-direction:column}}
 .metric-warning{border-color:#d59b21;background:#fff9e8}.manual-review-panel{border-left:4px solid #d59b21;background:#fffdf6}.mail-actions{display:flex;gap:.5rem;align-items:center}.mail-actions form{margin:0}.mail-body{padding:1rem;border:1px solid #dbe5ec;border-radius:8px;background:#fff;overflow:auto}.failed-import-main a{text-decoration:none}.failed-import-main a:hover{text-decoration:underline}
+
+/* Graycliff customer area dashboard */
+.area-tabs{display:flex;gap:8px;margin:0 0 20px;padding:6px;background:#e7eef3;border:1px solid var(--line);border-radius:12px;width:max-content;max-width:100%}
+.area-tab{padding:10px 24px!important;border-radius:8px;color:var(--navy)!important;text-decoration:none;font-weight:800}
+.area-tab.active{background:#fff;box-shadow:0 2px 7px rgba(20,50,75,.12)}
+.customer-metrics{grid-template-columns:repeat(6,minmax(155px,1fr))}
+.customer-metrics .metric{padding:18px}
+.customer-metrics .metric strong{font-size:30px}
+.metric-selected{border:2px solid var(--navy);box-shadow:0 4px 12px rgba(18,60,99,.12)}
+.customer-list-head{display:flex;justify-content:space-between;align-items:end;gap:18px;margin:26px 0 12px}
+.customer-list-head h2{margin:0;color:var(--navy)}
+.customer-list-head p{margin:4px 0 0;color:var(--muted)}
+.customer-job-table{min-width:1375px}
+.table-subtext{font-size:12px;color:var(--muted)}
+.payment-chip{display:inline-block;padding:5px 9px;border-radius:999px;font-size:12px;font-weight:800;white-space:nowrap}
+.payment-chip.paid{background:#e7f6ec;color:#166534}
+.payment-chip.unpaid{background:#fff3df;color:#8a5700}
+.document-link{display:inline-block;padding:6px 10px;border:1px solid #c7d9e4;border-radius:7px;background:#f4f9fc}
+@media(max-width:1200px){.customer-metrics{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:700px){.area-tabs{width:100%}.area-tab{flex:1;text-align:center;padding:10px 8px!important}.customer-metrics{grid-template-columns:repeat(2,1fr)}.customer-list-head{align-items:flex-start;flex-direction:column}}

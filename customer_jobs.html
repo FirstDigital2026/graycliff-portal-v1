@@ -1,19 +1,76 @@
 {% extends "base.html" %}
 {% block content %}
-<div class="page-head"><div><span class="eyebrow">GRAYCLIFF CUSTOMER VIEW</span><h1>Projects</h1><p>Current project status and approved billing information.</p></div></div>
-<div class="table-wrap">
-<table>
-<thead><tr><th>Project</th><th>Market</th><th>Task</th><th>Location</th><th>Status</th><th>Due</th><th>Invoice</th><th>Payment</th></tr></thead>
+<div class="page-head customer-page-head">
+  <div>
+    <span class="eyebrow">GRAYCLIFF CUSTOMER VIEW</span>
+    <h1>{{ 'All Areas' if area == 'all' else area|title }}</h1>
+    <p>Job status, invoice information, and approved documents.</p>
+  </div>
+</div>
+
+<nav class="area-tabs" aria-label="Select area">
+  <a class="area-tab {{ 'active' if area == 'florence' else '' }}" href="{{ url_for('customer_jobs', area='florence') }}">Florence</a>
+  <a class="area-tab {{ 'active' if area == 'columbia' else '' }}" href="{{ url_for('customer_jobs', area='columbia') }}">Columbia</a>
+  <a class="area-tab {{ 'active' if area == 'all' else '' }}" href="{{ url_for('customer_jobs', area='all') }}">All</a>
+</nav>
+
+<div class="metric-grid customer-metrics">
+  <a class="metric {{ 'metric-selected' if view == 'open' else '' }}" href="{{ url_for('customer_jobs', area=area, view='open') }}"><strong>{{ summary.open }}</strong><span>Open Jobs</span></a>
+  <a class="metric {{ 'metric-selected' if view == 'in_progress' else '' }}" href="{{ url_for('customer_jobs', area=area, view='in_progress') }}"><strong>{{ summary.in_progress }}</strong><span>In Progress</span></a>
+  <a class="metric {{ 'metric-selected' if view == 'field_complete' else '' }}" href="{{ url_for('customer_jobs', area=area, view='field_complete') }}"><strong>{{ summary.field_complete }}</strong><span>Field Complete</span></a>
+  <a class="metric {{ 'metric-selected' if view == 'completed' else '' }}" href="{{ url_for('customer_jobs', area=area, view='completed') }}"><strong>{{ summary.completed }}</strong><span>Completed</span></a>
+  <a class="metric {{ 'metric-selected' if view == 'outstanding' else '' }}" href="{{ url_for('customer_jobs', area=area, view='outstanding') }}"><strong>{{ summary.outstanding }}</strong><span>Outstanding Invoices</span></a>
+  <a class="metric {{ 'metric-selected' if view == 'recently_paid' else '' }}" href="{{ url_for('customer_jobs', area=area, view='recently_paid') }}"><strong>{{ summary.recently_paid }}</strong><span>Recently Paid</span></a>
+</div>
+
+<div class="customer-list-head">
+  <div>
+    <h2>{{ {
+      'all':'All Jobs', 'open':'Open Jobs', 'in_progress':'In Progress',
+      'field_complete':'Field Complete', 'completed':'Completed',
+      'outstanding':'Outstanding Invoices', 'recently_paid':'Recently Paid'
+    }.get(view, 'All Jobs') }}</h2>
+    <p>{{ jobs|length }} result{{ '' if jobs|length == 1 else 's' }}</p>
+  </div>
+  {% if view != 'all' %}<a class="secondary" href="{{ url_for('customer_jobs', area=area, view='all') }}">Show all jobs</a>{% endif %}
+</div>
+
+<div class="table-wrap customer-table-wrap">
+<table class="customer-job-table">
+<thead><tr>
+  <th>Work Order</th>
+  {% if area == 'all' %}<th>Area</th>{% endif %}
+  <th>Location</th>
+  <th>Job</th>
+  <th>Status</th>
+  <th>Received</th>
+  <th>Due</th>
+  <th>Field Completed</th>
+  <th>Invoice</th>
+  <th>Amount</th>
+  <th>Payment</th>
+  <th>Documents</th>
+</tr></thead>
 <tbody>
 {% for job in jobs %}
+{% set bill = job._billing or {} %}
 <tr>
   <td><a href="{{url_for('customer_job_detail',project_id=job.get('Project ID'))}}">{{job.get('Project ID')}}</a></td>
-  <td>{{job.get('Market','')}}</td><td>{{job.get('Task Name','')}}</td><td>{{job.get('Address','')}} {{job.get('City','')}}</td>
-  <td><span class="status">{{job.get('Status','')}}</span></td><td>{{job.get('Due Date','')}}</td>
-  <td>{{job._billing.get('Invoice Number','') if job._billing else ''}}</td>
-  <td>{{job._billing.get('Payment Status','') if job._billing else ''}}</td>
+  {% if area == 'all' %}<td>{{job.get('Market','')}}</td>{% endif %}
+  <td><strong>{{job.get('Address','')}}</strong><br><span class="table-subtext">{{job.get('City','')}}</span></td>
+  <td>{{job.get('Job Type','')}}{% if job.get('Task Name') %}<br><span class="table-subtext">{{job.get('Task Name')}}</span>{% endif %}</td>
+  <td><span class="status">{{job.get('Status','')}}</span></td>
+  <td>{{job.get('Date Received','') or job.get('Created Date','')}}</td>
+  <td>{{job.get('Due Date','')}}</td>
+  <td>{{job.get('Date Field Completed','')}}</td>
+  <td>{{bill.get('Invoice Number','')}}</td>
+  <td>{{bill.get('Invoice Amount','')}}</td>
+  <td>{% if bill.get('Payment Status') %}<span class="payment-chip {{ 'paid' if bill.get('Payment Status','')|lower in ['paid','payment received','fully paid'] else 'unpaid' }}">{{bill.get('Payment Status')}}</span>{% endif %}</td>
+  <td><a class="document-link" href="{{url_for('customer_job_detail',project_id=job.get('Project ID'))}}">View</a></td>
 </tr>
-{% else %}<tr><td colspan="8" class="empty">No projects available.</td></tr>{% endfor %}
+{% else %}
+<tr><td colspan="{{ 12 if area == 'all' else 11 }}" class="empty">No jobs match this view.</td></tr>
+{% endfor %}
 </tbody>
 </table>
 </div>

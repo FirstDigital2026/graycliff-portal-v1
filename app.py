@@ -2208,16 +2208,94 @@ def attachment_download(sheet_id: int, row_id: int, filename: str):
 @app.route("/customer/jobs")
 @roles("graycliff", "admin")
 def customer_jobs():
-    jobs = [
+    area = request.args.get("area", "all").strip().lower()
+    if area not in {"all", "florence", "columbia"}:
+        area = "all"
+
+    view = request.args.get("view", "all").strip().lower()
+    allowed_views = {
+        "all", "open", "in_progress", "field_complete", "completed",
+        "outstanding", "recently_paid",
+    }
+    if view not in allowed_views:
+        view = "all"
+
+    all_jobs = [
         row
         for row in record_map(FIELD_SHEET_ID)
         if not bool(row.get("Archived"))
     ]
     billing = by_project(record_map(BILLING_SHEET_ID))
-    for job in jobs:
-        job["_billing"] = billing.get(str(job.get("Project ID", "")).strip())
+    for job in all_jobs:
+        bill = billing.get(str(job.get("Project ID", "")).strip())
+        job["_billing"] = bill
+
+    def market_key(job):
+        return str(job.get("Market", "")).strip().lower()
+
+    area_jobs = all_jobs if area == "all" else [job for job in all_jobs if market_key(job) == area]
+
+    def status_key(job):
+        return str(job.get("Status", "")).strip().lower()
+
+    def payment_key(job):
+        bill = job.get("_billing") or {}
+        return str(bill.get("Payment Status", "")).strip().lower()
+
+    def has_invoice(job):
+        bill = job.get("_billing") or {}
+        return bool(str(bill.get("Invoice Number", "")).strip())
+
+    def is_paid(job):
+        return payment_key(job) in {"paid", "payment received", "fully paid"}
+
+    def is_completed(job):
+        return status_key(job) in {"office approved", "closed", "completed", "billed"}
+
+    def is_open(job):
+        return not is_completed(job)
+
+    def is_recently_paid(job):
+        if not is_paid(job):
+            return False
+        bill = job.get("_billing") or {}
+        raw = str(bill.get("Payment Date", "")).strip()
+        if not raw:
+            return True
+        try:
+            paid_date = datetime.fromisoformat(raw[:10]).date()
+            return paid_date >= (datetime.utcnow().date() - timedelta(days=60))
+        except ValueError:
+            return True
+
+    summary = {
+        "open": sum(1 for job in area_jobs if is_open(job)),
+        "in_progress": sum(1 for job in area_jobs if status_key(job) == "in progress"),
+        "field_complete": sum(1 for job in area_jobs if status_key(job) == "field complete"),
+        "completed": sum(1 for job in area_jobs if is_completed(job)),
+        "outstanding": sum(1 for job in area_jobs if has_invoice(job) and not is_paid(job)),
+        "recently_paid": sum(1 for job in area_jobs if is_recently_paid(job)),
+    }
+
+    filters = {
+        "all": lambda job: True,
+        "open": is_open,
+        "in_progress": lambda job: status_key(job) == "in progress",
+        "field_complete": lambda job: status_key(job) == "field complete",
+        "completed": is_completed,
+        "outstanding": lambda job: has_invoice(job) and not is_paid(job),
+        "recently_paid": is_recently_paid,
+    }
+    jobs = [job for job in area_jobs if filters[view](job)]
     jobs.sort(key=lambda r: (str(r.get("Due Date", "9999-99-99")), str(r.get("Project ID", ""))))
-    return render_template("customer_jobs.html", jobs=jobs)
+
+    return render_template(
+        "customer_jobs.html",
+        jobs=jobs,
+        area=area,
+        view=view,
+        summary=summary,
+    )
 
 
 @app.route("/customer/jobs/<project_id>")
