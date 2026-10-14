@@ -294,7 +294,7 @@ def save_message(store, token, message, item, attachments, key, state):
     discussions=store.list_row_discussions(sid,row['id'])
     if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
         sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
-        store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject']+'\n'+item['body'][:12000])
+        store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body'][:7000])
     return market.lower()+':'+str(row['id'])
 
 def seed_imported_threads(store, token, folder, db):
