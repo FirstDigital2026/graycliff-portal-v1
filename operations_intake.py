@@ -275,13 +275,22 @@ def save_message(store, token, message, item, attachments, key, state):
     else:
         write(store,sid,values,row['id'])
         state['updated'] += 1
-    names = {a['name'] for a in store.list_row_attachments(sid,row['id'])}
+    capture_email_files(store,token,message,sid,row['id'],attachments,key)
+    marker='[Email intake '+key+']'
+    discussions=store._request('GET',f"/sheets/{sid}/rows/{row['id']}/discussions",query={'includeAll':'true','include':'comments'}).get('data',[])
+    if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
+        sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
+        store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body'][:7000])
+    return market.lower()+':'+str(row['id'])
+
+def capture_email_files(store,token,message,sid,row_id,attachments,key):
+    names = {a['name'] for a in store.list_row_attachments(sid,row_id)}
     raw = graph.get_message_mime(token,message['id'])
     if not raw:
         raise RuntimeError('Original email copy unavailable; intake requires review.')
     eml_name = 'Email-'+key[:20]+'.eml'
     if eml_name not in names:
-        store.attach_file_to_row(sid,row['id'],filename=eml_name,mime_type='message/rfc822',data=raw)
+        store.attach_file_to_row(sid,row_id,filename=eml_name,mime_type='message/rfc822',data=raw)
     parts = source_attachments(raw)
     decoded_files = [d for a in attachments if (d:=graph.attachment_bytes(a))] + parts
     saved_hashes={m.group(1) for n in names if (m:=re.search(r'-([a-f0-9]{10})(?:\.[^.]+)?$',n))}
@@ -293,7 +302,7 @@ def save_message(store, token, message, item, attachments, key, state):
         stem,ext = os.path.splitext(name)
         name = stem[:110]+'-'+digest+ext
         if name not in names:
-            store.attach_file_to_row(sid,row['id'],filename=name,mime_type=mime,data=data)
+            store.attach_file_to_row(sid,row_id,filename=name,mime_type=mime,data=data)
             names.add(name)
         saved_hashes.add(digest)
     for attachment in attachments:
@@ -302,12 +311,6 @@ def save_message(store, token, message, item, attachments, key, state):
             raise ValueError('Cloud-linked attachment requires office review; original email retained. Download and attach the referenced file.')
         if kind=='#microsoft.graph.fileAttachment' and not graph.attachment_bytes(attachment) and not any(n==attachment.get('name') for n,_,_ in parts):
             raise ValueError('An attachment could not be extracted; original email retained. Office review required.')
-    marker='[Email intake '+key+']'
-    discussions=store._request('GET',f"/sheets/{sid}/rows/{row['id']}/discussions",query={'includeAll':'true','include':'comments'}).get('data',[])
-    if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
-        sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
-        store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body'][:7000])
-    return market.lower()+':'+str(row['id'])
 
 def source_attachments(raw):
     """Keep regular files, inline/CID images, attached emails and data-URI pictures."""
@@ -344,7 +347,7 @@ def seed_imported_threads(store, token, folder, db):
     with db() as connection:
         connection.execute('CREATE TABLE IF NOT EXISTS operations_mail (message_key TEXT PRIMARY KEY, job_key TEXT, state TEXT)')
         connection.execute('CREATE TABLE IF NOT EXISTS operations_meta (key TEXT PRIMARY KEY, value TEXT)')
-        if connection.execute("SELECT value FROM operations_meta WHERE key='thread_seed_v1'").fetchone():
+        if connection.execute("SELECT value FROM operations_meta WHERE key='thread_seed_v2'").fetchone():
             return
         recorded={r['message_key']:r['job_key'] for r in connection.execute("SELECT * FROM operations_mail WHERE state='Imported'").fetchall()}
     if recorded:
@@ -367,8 +370,12 @@ def seed_imported_threads(store, token, folder, db):
             old=vals(sheet,rows[0]);threads=json.loads(str(old.get('Portal Email Threads') or '[]'))
             if thread not in threads:
                 write(store,sid,{'Portal Email Threads':json.dumps(threads+[thread])},rows[0]['id'])
+            try:
+                capture_email_files(store,token,message,sid,rows[0]['id'],[],key)
+            except Exception as exc:
+                audit(store,ledger_id(store),key,State='Needs review',Detail='Attachment backfill needs office review ('+type(exc).__name__+'). Original email remains in Outlook.',**{'Job Key':jobkey})
     with db() as connection:
-        connection.execute("INSERT OR REPLACE INTO operations_meta VALUES ('thread_seed_v1','done')")
+        connection.execute("INSERT OR REPLACE INTO operations_meta VALUES ('thread_seed_v2','done')")
 
 def run(store, db):
     # Three historical services use this repository. Only one may consume Inbox.
