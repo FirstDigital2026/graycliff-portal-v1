@@ -74,6 +74,10 @@ def parse(message, attachments):
     if not ntp and not pid and not crq and not outage:
         raise ValueError('Email format needs review: no reliable PID, NTP, CRQ or outage subject.')
     parsed = ntp or graph.ParsedNtp('',pid.group(1) if pid else '',subject)
+    # A coordinator's signature address is never a job location.
+    if ntp:
+        parsed.address = ''
+        parsed.city = ''
     parsed = graph.enrich_ntp_from_attachments(parsed,attachments)
     for filename,text in graph._candidate_document_texts(attachments):
         document_pid = re.search(r'PRISM\s+ID\s*:\s*(\d+)',text,re.I)
@@ -85,13 +89,20 @@ def parse(message, attachments):
             parsed.work_order = work_order.group(1)
         if city:
             parsed.city = city.group(1).strip().title()
+        lines=text.splitlines()
+        for index,line in enumerate(lines):
+            if 'Job Address' in line and 'Site Contact' in line:
+                left,right=line.index('Job Address'),line.index('Site Contact')
+                candidate=next((v for v in lines[index+1:] if v.strip()),'')[left:right].strip()
+                if re.match(r'^\d+\s+',candidate):
+                    parsed.address=candidate
     if pid and parsed.prism and pid.group(1) != parsed.prism:
         raise ValueError('Subject PID conflicts with the attached NTP. Review the documents.')
     if not parsed.prism and pid:
         parsed.prism = pid.group(1)
     # Address in the subject is safer than a coordinator's address in a signature.
     address = re.search(r'\b(\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#\'-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY)))(?![A-Za-z])',subject,re.I)
-    if not parsed.address and address:
+    if address:
         parsed.address = address.group(1).strip()
     location_text = subject + ' ' + parsed.city + ' ' + parsed.address
     if not parsed.city:
@@ -142,6 +153,8 @@ def save_message(store, token, message, item, attachments, key, state):
         market = item['market']
         if market not in AREA or not item['address']:
             raise ValueError('Area or job location is missing. Office review required before releasing to techs.')
+        if item['type']=='Standard' and not item['ntp_due']:
+            raise ValueError('NTP completion date is missing. Office review required before scheduling this normal job.')
         sid = AREA[market]
         row,old = None,{}
     ensure_columns(store,sid,EXTRA)
@@ -221,14 +234,18 @@ def run(store, db):
             with db() as connection:
                 connection.execute('CREATE TABLE IF NOT EXISTS operations_mail (message_key TEXT PRIMARY KEY, job_key TEXT, state TEXT)')
                 prior = connection.execute('SELECT * FROM operations_mail WHERE message_key=?',(key,)).fetchone()
+            phase='recording receipt'
             try:
                 if prior and prior['state']=='Imported':
                     graph.move_message(token,message['id'],imported)
                     continue
                 audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
+                phase='reading documents'
                 attachments = graph.list_attachments(token,message['id']) if message.get('hasAttachments') else []
                 item = parse(message,attachments)
+                phase='saving job and source files'
                 jobkey = save_message(store,token,message,item,attachments,key,stats)
+                phase='confirming import'
                 audit(store,sid,key,State='Imported',Detail='Job and original email saved; existing field status preserved.',**{'Job Key':jobkey})
                 with db() as connection:
                     connection.execute('INSERT OR REPLACE INTO operations_mail VALUES (?,?,?)',(key,jobkey,'Imported'))
@@ -237,9 +254,12 @@ def run(store, db):
                 audit(store,sid,key,State='Needs review',Detail=str(exc))
                 graph.move_message(token,message['id'],review)
                 stats['ignored'] += 1
-            except Exception:
+            except Exception as exc:
                 # Do not record provider payloads, credentials or private HTTP data.
-                audit(store,sid,key,State='Import failed',Detail='Could not confirm the complete import. Check the source email and any partially saved job before retrying.')
+                diagnostic=type(exc).__name__
+                if diagnostic=='SmartsheetError':
+                    diagnostic+=': '+str(exc)[:700]
+                audit(store,sid,key,Subject=message.get('subject',''),State='Import failed',Detail=f'Failed while {phase}. {diagnostic}. Check any partially saved job before retrying.',**{'Received At':message.get('receivedDateTime','')})
                 graph.move_message(token,message['id'],failed)
                 stats['failed'] += 1
         audit(store,sid,'SYSTEM',Subject='Graycliff mailbox connection',State='Connected',Detail='Inbox checked. '+json.dumps(stats))
