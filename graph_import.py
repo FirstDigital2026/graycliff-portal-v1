@@ -158,12 +158,17 @@ def get_message_details(token: str, message_id: str) -> dict[str, Any]:
 def list_attachments(token: str, message_id: str) -> list[dict[str, Any]]:
     user = urllib.parse.quote(mailbox())
     mid = urllib.parse.quote(message_id, safe="")
-    result = _request(
-        "GET",
-        f"{GRAPH_ROOT}/users/{user}/messages/{mid}/attachments?$top=100",
-        token=token,
-    )
-    return result.get("value", []) if isinstance(result, dict) else []
+    url=f"{GRAPH_ROOT}/users/{user}/messages/{mid}/attachments?$top=100"
+    items=[]
+    while url:
+        if not url.startswith(GRAPH_ROOT+'/'):
+            raise GraphImportError('Unexpected attachment pagination URL.')
+        result=_request('GET',url,token=token)
+        if not isinstance(result,dict):
+            raise GraphImportError('Attachment listing was not confirmed.')
+        items.extend(result.get('value',[]))
+        url=result.get('@odata.nextLink','')
+    return items
 
 
 def get_message_mime(token: str, message_id: str) -> bytes:

@@ -10,6 +10,10 @@ import os
 import re
 import threading
 import urllib.request
+import email
+import email.policy
+import mimetypes
+import base64
 from datetime import date, datetime, timedelta, timezone
 import graph_import as graph
 
@@ -272,31 +276,67 @@ def save_message(store, token, message, item, attachments, key, state):
         write(store,sid,values,row['id'])
         state['updated'] += 1
     names = {a['name'] for a in store.list_row_attachments(sid,row['id'])}
-    for attachment in attachments:
-        if attachment.get('isInline'):
-            continue
-        decoded = graph.attachment_bytes(attachment)
-        if not decoded:
-            continue
-        name,mime,data = decoded
+    raw = graph.get_message_mime(token,message['id'])
+    if not raw:
+        raise RuntimeError('Original email copy unavailable; intake requires review.')
+    eml_name = 'Email-'+key[:20]+'.eml'
+    if eml_name not in names:
+        store.attach_file_to_row(sid,row['id'],filename=eml_name,mime_type='message/rfc822',data=raw)
+    parts = source_attachments(raw)
+    decoded_files = [d for a in attachments if (d:=graph.attachment_bytes(a))] + parts
+    saved_hashes={m.group(1) for n in names if (m:=re.search(r'-([a-f0-9]{10})(?:\.[^.]+)?$',n))}
+    for name,mime,data in decoded_files:
         # Hash content, so revised files with the same filename are retained.
+        digest=hashlib.sha256(data).hexdigest()[:10]
+        if digest in saved_hashes:
+            continue
         stem,ext = os.path.splitext(name)
-        name = stem[:110]+'-'+hashlib.sha256(data).hexdigest()[:10]+ext
+        name = stem[:110]+'-'+digest+ext
         if name not in names:
             store.attach_file_to_row(sid,row['id'],filename=name,mime_type=mime,data=data)
             names.add(name)
-    eml_name = 'Email-'+key[:20]+'.eml'
-    if eml_name not in names:
-        data = graph.get_message_mime(token,message['id'])
-        if not data:
-            raise RuntimeError('Original email copy unavailable; intake requires review.')
-        store.attach_file_to_row(sid,row['id'],filename=eml_name,mime_type='message/rfc822',data=data)
+        saved_hashes.add(digest)
+    for attachment in attachments:
+        kind=attachment.get('@odata.type','')
+        if kind=='#microsoft.graph.referenceAttachment':
+            raise ValueError('Cloud-linked attachment requires office review; original email retained. Download and attach the referenced file.')
+        if kind=='#microsoft.graph.fileAttachment' and not graph.attachment_bytes(attachment) and not any(n==attachment.get('name') for n,_,_ in parts):
+            raise ValueError('An attachment could not be extracted; original email retained. Office review required.')
     marker='[Email intake '+key+']'
     discussions=store._request('GET',f"/sheets/{sid}/rows/{row['id']}/discussions",query={'includeAll':'true','include':'comments'}).get('data',[])
     if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
         sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
         store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body'][:7000])
     return market.lower()+':'+str(row['id'])
+
+def source_attachments(raw):
+    """Keep regular files, inline/CID images, attached emails and data-URI pictures."""
+    source=email.message_from_bytes(raw,policy=email.policy.default)
+    files=[]
+    for part in source.walk():
+        mime=part.get_content_type();name=part.get_filename()
+        if mime=='message/rfc822':
+            payload=part.get_payload()
+            if isinstance(payload,list) and payload:
+                files.append((name or 'attached-message.eml',mime,payload[0].as_bytes(policy=email.policy.default)))
+            continue
+        if part.is_multipart():
+            continue
+        data=part.get_payload(decode=True)
+        if not data:
+            continue
+        if name or part.get_content_disposition() in {'attachment','inline'} or part.get('Content-ID'):
+            files.append((name or 'inline-picture'+(mimetypes.guess_extension(mime) or '.bin'),mime,data))
+        if mime=='text/html':
+            html=data.decode(part.get_content_charset() or 'utf-8',errors='replace')
+            for image_mime,encoded in re.findall(r'data:(image/[a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)',html):
+                try:
+                    picture=base64.b64decode(re.sub(r'\s','',encoded),validate=True)
+                except ValueError:
+                    continue
+                if picture:
+                    files.append(('embedded-picture'+(mimetypes.guess_extension(image_mime) or '.bin'),image_mime,picture))
+    return files
 
 def seed_imported_threads(store, token, folder, db):
     # Link previously imported messages once, using the existing recorded job key.
@@ -358,7 +398,8 @@ def run(store, db):
                     continue
                 audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
                 phase='reading documents'
-                attachments = graph.list_attachments(token,message['id']) if message.get('hasAttachments') else []
+                # Graph's hasAttachments flag is false for messages containing only inline pictures.
+                attachments = graph.list_attachments(token,message['id'])
                 item = message_item(store,message,attachments)
                 phase='saving job and source files'
                 jobkey = save_message(store,token,message,item,attachments,key,stats)
