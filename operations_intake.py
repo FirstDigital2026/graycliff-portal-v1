@@ -134,7 +134,8 @@ def locate(store, item):
             address = normalize(item['address'])
             # Legacy rows often have a CRQ in the title but no PID column.
             # Accept only the full extracted address on one unique row; never fuzzy-match.
-            match_address = (len(address)>7 and address in normalize(title)
+            address_pattern=r'(?<![a-z0-9])'+r'[\W_]*'.join(map(re.escape,address))+r'(?![a-z0-9])'
+            match_address = (len(address)>7 and re.search(address_pattern,title.lower())
                              and not v.get('Portal Project ID')
                              and (not item['city'] or not v.get('City') or normalize(v['City']).startswith(normalize(item['city']))))
             if match_pid or match_wo or match_address:
@@ -263,11 +264,6 @@ def run(store, db):
                 graph.move_message(token,message['id'],failed)
                 stats['failed'] += 1
         audit(store,sid,'SYSTEM',Subject='Graycliff mailbox connection',State='Connected',Detail='Inbox checked. '+json.dumps(stats))
-        # Wake the existing website scheduler so hourly reminders do not rely on visitors.
-        try:
-            urllib.request.urlopen('https://firstdigitalsc.com/wp-cron.php',timeout=15).close()
-        except Exception:
-            pass
         return {'ok':True,'configured':True,**stats,'message':'Mailbox intake checked the operational area sheets.'}
     except Exception:
         if sid:
@@ -277,4 +273,10 @@ def run(store, db):
                 pass
         raise
     finally:
+        # Outage reminders must keep running even when mailbox intake fails.
+        try:
+            request=urllib.request.Request('https://firstdigitalsc.com/wp-cron.php',headers={'User-Agent':'Mozilla/5.0 FirstDigitalGraycliff/0.2'})
+            urllib.request.urlopen(request,timeout=15).close()
+        except Exception:
+            pass
         GUARD.release()
