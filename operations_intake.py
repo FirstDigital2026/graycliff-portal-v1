@@ -202,11 +202,11 @@ def save_message(store, token, message, item, attachments, key, state):
                            'Notes':'Email intake: '+item['subject']+'\n'+item['body'][:3000]})
             if jobtype=='Outage':
                 from zoneinfo import ZoneInfo
-                today = datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+                today = datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%dT%H:%M')
                 roster = [s for s in store.list_sheets() if s['name']=='Graycliff On Call Rotation']
                 if len(roster)==1:
                     schedule=store.get_sheet(roster[0]['id'],force=True)
-                    active=[vals(schedule,r) for r in schedule.get('rows',[]) if vals(schedule,r).get('Area')==market and str(vals(schedule,r).get('Start Date',''))<=today<=str(vals(schedule,r).get('End Date',''))]
+                    active=[vals(schedule,r) for r in schedule.get('rows',[]) if vals(schedule,r).get('Area')==market and str(vals(schedule,r).get('Start Date',''))<=today<str(vals(schedule,r).get('End Date','')) and vals(schedule,r).get('Email') and vals(schedule,r).get('Not On Call')!='Yes']
                     if len(active)==1:
                         values.update({'Portal Claimed By':active[0].get('Email',''),'Assigned Technician':active[0].get('Technician',''),'Portal Assigned At':now(),'Status':'Assigned'})
             row = write(store,sid,values)
