@@ -18,7 +18,8 @@ LEDGER = 'Graycliff Email Intake'
 GUARD = threading.Lock()
 EXTRA = ['Portal Project ID', 'Portal Work Order', 'Portal NTP Due Date',
          'Portal Intake Key', 'Portal Job Type', 'Portal Incident ID',
-         'Portal Claimed By', 'Assigned Technician', 'Portal Assigned At']
+         'Portal Claimed By', 'Assigned Technician', 'Portal Assigned At',
+         'Portal Email Threads', 'Portal Email Updated At']
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -163,12 +164,57 @@ def locate(store, item):
         raise ValueError('Multiple existing jobs match this identifier. Review before changing a job.')
     return found[0] if found else None
 
+def thread_match(store, message):
+    thread = str(message.get('conversationId') or '')
+    if not thread:
+        return None
+    matches = []
+    for market,sid in AREA.items():
+        sheet = store.get_sheet(sid,force=True)
+        for row in sheet.get('rows',[]):
+            old = vals(sheet,row)
+            try:
+                threads = json.loads(str(old.get('Portal Email Threads') or '[]'))
+            except (ValueError,TypeError):
+                threads = []
+            if thread in threads:
+                matches.append((market,sid,row,old))
+    if len(matches)>1:
+        raise ValueError('This email chain is linked to multiple jobs. Office review required.')
+    return matches[0] if matches else None
+
+def message_item(store, message, attachments):
+    linked = thread_match(store,message)
+    try:
+        item = parse(message,attachments)
+    except ValueError as exc:
+        if not linked or not str(exc).startswith('Email format needs review:'):
+            raise
+        # Only an established chain may supply context for an otherwise unrecognized reply.
+        subject = str(message.get('subject',''))
+        if re.search(r'\b(?:PID|PRISM|CRQ)\s*[:#]?\s*\d+',subject,re.I):
+            raise ValueError('Reply identifiers could not be verified. Office review required.')
+        old=linked[3]
+        item={'pid':str(old.get('Portal Project ID','')),'wo':str(old.get('Portal Work Order','')),
+              'address':str(old.get('Task Name','')),'city':str(old.get('City','')),
+              'market':linked[0],'ntp_due':'','type':str(old.get('Portal Job Type') or 'Standard'),
+              'subject':subject,'body':graph._plain_text((message.get('body') or {}).get('content',''))}
+    return item
+
 def save_message(store, token, message, item, attachments, key, state):
+    linked = thread_match(store,message)
     found = locate(store,item)
+    if linked:
+        if found and (found[1],found[2]['id'])!=(linked[1],linked[2]['id']):
+            raise ValueError('Reply identifiers conflict with the job linked to this chain. Office review required.')
+        old=linked[3]
+        if item['pid'] and old.get('Portal Project ID') and item['pid']!=str(old['Portal Project ID']):
+            raise ValueError('Reply PID differs from this chain’s job. Office review required.')
+        if item['wo'] and old.get('Portal Work Order') and item['wo']!=str(old['Portal Work Order']):
+            raise ValueError('Reply work order differs from this chain’s job. Office review required.')
+        found=linked
     if found:
         market,sid,row,old = found
-        if str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I):
-            raise ValueError('Email matches completed work. Office must review before reopening it.')
     else:
         market = item['market']
         if market not in AREA or not item['address']:
@@ -185,10 +231,20 @@ def save_message(store, token, message, item, attachments, key, state):
     # Existing CRQ classification and scheduled windows always take precedence.
     jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name','')),re.I) else item['type'])
     values['Portal Job Type'] = jobtype
-    if item['ntp_due']:
+    closed = bool(old and (str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I)))
+    if item['ntp_due'] and not closed:
         values['Portal NTP Due Date'] = item['ntp_due']
         if jobtype == 'Standard':
             values['Due Date'] = internal_due(item['ntp_due'])
+    thread=str(message.get('conversationId') or '')
+    try:
+        threads=json.loads(str(old.get('Portal Email Threads') or '[]'))
+    except (ValueError,TypeError):
+        threads=[]
+    if thread and thread not in threads:
+        threads.append(thread)
+    values['Portal Email Threads']=json.dumps(threads)
+    values['Portal Email Updated At']=message.get('receivedDateTime') or now()
     if not row:
         # Include the stable intake key in the creation itself for ambiguous failures.
         sheet = store.get_sheet(sid,force=True)
@@ -234,7 +290,44 @@ def save_message(store, token, message, item, attachments, key, state):
         if not data:
             raise RuntimeError('Original email copy unavailable; intake requires review.')
         store.attach_file_to_row(sid,row['id'],filename=eml_name,mime_type='message/rfc822',data=data)
+    marker='[Email intake '+key+']'
+    discussions=store.list_row_discussions(sid,row['id'])
+    if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
+        sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
+        store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject']+'\n'+item['body'][:12000])
     return market.lower()+':'+str(row['id'])
+
+def seed_imported_threads(store, token, folder, db):
+    # Link previously imported messages once, using the existing recorded job key.
+    # Never infer a new job from historical mail during this migration.
+    with db() as connection:
+        connection.execute('CREATE TABLE IF NOT EXISTS operations_mail (message_key TEXT PRIMARY KEY, job_key TEXT, state TEXT)')
+        connection.execute('CREATE TABLE IF NOT EXISTS operations_meta (key TEXT PRIMARY KEY, value TEXT)')
+        if connection.execute("SELECT value FROM operations_meta WHERE key='thread_seed_v1'").fetchone():
+            return
+        recorded={r['message_key']:r['job_key'] for r in connection.execute("SELECT * FROM operations_mail WHERE state='Imported'").fetchall()}
+    if recorded:
+        import urllib.parse
+        user=urllib.parse.quote(graph.mailbox(),safe='')
+        fid=urllib.parse.quote(folder,safe='')
+        result=graph._request('GET',f'{graph.GRAPH_ROOT}/users/{user}/mailFolders/{fid}/messages?$top=100&$orderby=receivedDateTime%20desc&$select=id,internetMessageId,conversationId',token=token)
+        for message in result.get('value',[]):
+            key=hashlib.sha256(str(message.get('internetMessageId') or message['id']).encode()).hexdigest()
+            jobkey=recorded.get(key,'');thread=message.get('conversationId')
+            if not jobkey or not thread:
+                continue
+            area,rid=jobkey.split(':',1);market=area.title();sid=AREA.get(market)
+            if not sid:
+                continue
+            sheet=ensure_columns(store,sid,EXTRA)
+            rows=[r for r in sheet.get('rows',[]) if str(r['id'])==rid]
+            if len(rows)!=1:
+                continue
+            old=vals(sheet,rows[0]);threads=json.loads(str(old.get('Portal Email Threads') or '[]'))
+            if thread not in threads:
+                write(store,sid,{'Portal Email Threads':json.dumps(threads+[thread])},rows[0]['id'])
+    with db() as connection:
+        connection.execute("INSERT OR REPLACE INTO operations_meta VALUES ('thread_seed_v1','done')")
 
 def run(store, db):
     # Three historical services use this repository. Only one may consume Inbox.
@@ -249,6 +342,7 @@ def run(store, db):
         imported = graph.ensure_mail_folder(token,'Imported')
         review = graph.ensure_mail_folder(token,'Manual Review')
         failed = graph.ensure_mail_folder(token,'Import Failed')
+        seed_imported_threads(store,token,imported,db)
         stats = {'created':0,'updated':0,'failed':0,'ignored':0,'replies':0}
         messages = graph.list_recent_messages(token,top=40)
         for message in reversed(messages):
@@ -264,7 +358,7 @@ def run(store, db):
                 audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
                 phase='reading documents'
                 attachments = graph.list_attachments(token,message['id']) if message.get('hasAttachments') else []
-                item = parse(message,attachments)
+                item = message_item(store,message,attachments)
                 phase='saving job and source files'
                 jobkey = save_message(store,token,message,item,attachments,key,stats)
                 phase='confirming import'
