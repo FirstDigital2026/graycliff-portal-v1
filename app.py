@@ -879,134 +879,8 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
 
 
 def import_graycliff_mailbox() -> dict[str, Any]:
-    if not graph_configured():
-        return {"ok": False, "configured": False, "message": "Graycliff mailbox connection is not configured in Render.", "created": 0, "updated": 0, "ignored": 0, "failed": 0, "replies": 0}
-
-    token = graph_access_token()
-    imported_folder = graph_ensure_mail_folder(token, "Imported")
-    failed_folder = graph_ensure_mail_folder(token, "Import Failed")
-    manual_folder = graph_ensure_mail_folder(token, "Manual Review")
-    messages = graph_list_recent_messages(token, top=40)
-    existing = by_project(record_map(FIELD_SHEET_ID, force=True))
-    stats = {"created": 0, "updated": 0, "ignored": 0, "failed": 0, "replies": 0, "attachments": 0}
-
-    for message in reversed(messages):
-        message_id = str(message.get("id", ""))
-        if not message_id:
-            continue
-
-        parsed = parse_recognized_ntp(message)
-        message_attachments = graph_list_attachments(token, message_id) if message.get("hasAttachments") else []
-
-        # Replies in a previously imported Microsoft conversation belong to that job.
-        if not parsed:
-            conversation_id = str(message.get("conversationId", ""))
-            related = None
-            if conversation_id:
-                with db() as connection:
-                    related = connection.execute(
-                        """SELECT project_id FROM imported_mail
-                           WHERE conversation_id=? AND project_id<>''
-                           ORDER BY imported_at DESC LIMIT 1""",
-                        (conversation_id,),
-                    ).fetchone()
-            project_id = str(related["project_id"]) if related else ""
-            if project_id and project_id in existing:
-                try:
-                    target_row_id = int(existing[project_id]["_row_id"])
-                    current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
-                    for item in message_attachments:
-                        decoded = graph_attachment_bytes(item)
-                        if not decoded:
-                            continue
-                        filename, mime_type, data = decoded
-                        if filename in current_names:
-                            continue
-                        store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=filename, mime_type=mime_type, data=data)
-                        current_names.add(filename)
-                        stats["attachments"] += 1
-                    eml_name = f"Reply-{project_id}-{message_id[-8:]}.eml"
-                    if eml_name not in current_names:
-                        mime_data = get_message_mime(token, message_id)
-                        if mime_data:
-                            store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=eml_name, mime_type="message/rfc822", data=mime_data)
-                            stats["attachments"] += 1
-                    _record_mail_result(message, project_id=project_id, result="attached-reply")
-                    graph_move_message(token, message_id, imported_folder)
-                    stats["replies"] += 1
-                    continue
-                except Exception as exc:
-                    stats["failed"] += 1
-                    _record_mail_result(message, project_id=project_id, result=f"failed: reply attachment error: {str(exc)[:250]}")
-                    graph_move_message(token, message_id, failed_folder)
-                    continue
-
-            stats["ignored"] += 1
-            _record_mail_result(message, result="manual-review: unrecognized standalone email")
-            try:
-                graph_move_message(token, message_id, manual_folder)
-            except Exception:
-                graph_mark_message_read(token, message_id)
-            continue
-
-        parsed = enrich_ntp_from_attachments(parsed, message_attachments)
-        project_id = parsed.work_order
-        try:
-            task_name = parsed.address or parsed.customer_name or f"Graycliff Work Order {project_id}"
-            source_values = {
-                "Market": parsed.market, "Task Name": task_name, "Address": parsed.address,
-                "City": parsed.city, "Job Type": "Standard", "Due Date": parsed.due_date,
-                "Priority": "Normal", "Customer Notes": f"PRISM {parsed.prism}" if parsed.prism else "",
-            }
-            if project_id in existing:
-                row = existing[project_id]
-                update_values = {key: value for key, value in source_values.items() if value and row.get(key, "") != value}
-                if update_values:
-                    store.update_row(FIELD_SHEET_ID, int(row["_row_id"]), update_values)
-                target_row_id = int(row["_row_id"])
-                stats["updated"] += 1
-                result_name = "updated-revision"
-            else:
-                created = create_field_job({"Project ID": project_id, **source_values, "Status": "Unassigned", "Office Review Status": "Not Ready"})
-                target_row_id = int(created["row"].get("id"))
-                stats["created"] += 1
-                result_name = "created"
-                existing = by_project(record_map(FIELD_SHEET_ID, force=True))
-
-            current_names = _attachment_names(FIELD_SHEET_ID, target_row_id)
-            for item in message_attachments:
-                decoded = graph_attachment_bytes(item)
-                if not decoded:
-                    continue
-                filename, mime_type, data = decoded
-                if filename in current_names:
-                    continue
-                store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=filename, mime_type=mime_type, data=data)
-                current_names.add(filename)
-                stats["attachments"] += 1
-            eml_name = f"NTP-{project_id}-{message_id[-8:]}.eml"
-            if eml_name not in current_names:
-                mime_data = get_message_mime(token, message_id)
-                if mime_data:
-                    store.attach_file_to_row(FIELD_SHEET_ID, target_row_id, filename=eml_name, mime_type="message/rfc822", data=mime_data)
-                    stats["attachments"] += 1
-            _record_mail_result(message, project_id=project_id, result=result_name)
-            graph_move_message(token, message_id, imported_folder)
-        except Exception as exc:
-            stats["failed"] += 1
-            _record_mail_result(message, project_id=project_id, result=f"failed: {str(exc)[:300]}")
-            try:
-                graph_move_message(token, message_id, failed_folder)
-            except Exception:
-                graph_mark_message_read(token, message_id)
-
-    if stats["created"] or stats["updated"]:
-        sync_mobile_field_sheets()
-    return {"ok": True, "configured": True, **stats, "message": (
-        f"Mailbox import complete: {stats['created']} job(s) created, {stats['updated']} revision(s) updated, "
-        f"{stats['replies']} reply email(s) attached, {stats['failed']} true import failure(s), "
-        f"{stats['ignored']} email(s) moved to Manual Review, and {stats['attachments']} attachment(s) copied."
-    )}
+    from operations_intake import run
+    return run(store, db)
 
 
 def sync_mobile_field_sheets() -> dict[str, Any]:
@@ -1362,7 +1236,7 @@ def start_scheduler() -> None:
     scheduler.add_job(
         import_graycliff_mailbox,
         "interval",
-        minutes=minutes,
+        minutes=1,
         id="graycliff_mailbox_import",
         max_instances=1,
         coalesce=True,

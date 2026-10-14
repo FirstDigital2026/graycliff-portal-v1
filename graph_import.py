@@ -230,7 +230,7 @@ def _market_for(city: str, address: str) -> str:
 def _pdf_text(data: bytes) -> str:
     try:
         reader = PdfReader(io.BytesIO(data))
-        return "\n".join((page.extract_text() or "") for page in reader.pages)
+        return "\n".join((page.extract_text(extraction_mode='layout') or "") for page in reader.pages)
     except Exception:
         return ""
 
