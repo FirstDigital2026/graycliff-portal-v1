@@ -104,6 +104,25 @@ def parse(message, attachments):
     address = re.search(r'\b(\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#\'-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY)))(?![A-Za-z])',subject,re.I)
     if address:
         parsed.address = address.group(1).strip()
+    if outage:
+        # Incident emails frequently have no PID and put the site only in the body.
+        # Require a full location with city/state; exclude known signature offices.
+        pattern=r'\b(\d{1,6}\s+[A-Za-z0-9 .#\'-]{2,65}?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY))\.?\s*(?:NE|NW|SE|SW)?[, ]+([A-Za-z ]{2,30})[, ]+SC\b'
+        sites={}
+        for found in re.finditer(pattern,body,re.I):
+            street,city=found.group(1).strip(),found.group(2).strip()
+            compact=re.sub(r'[^a-z0-9]','',street.lower())
+            if compact in {'170pontiaccenterdr','3998claussenroad','3235scashuadr'}:
+                continue
+            if parsed.address and re.sub(r'[^a-z0-9]','',parsed.address.lower())!=compact:
+                continue
+            sites[compact]=(street,city)
+        if len(sites)==1:
+            parsed.address,parsed.city=next(iter(sites.values()))
+        elif len(sites)>1:
+            raise ValueError('Incident email contains multiple possible sites. Office review is required.')
+        if parsed.city.lower()=='orangeburge':
+            parsed.city='Orangeburg'
     location_text = subject + ' ' + parsed.city + ' ' + parsed.address
     if not parsed.city:
         cities = graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | {'cheraw','sumter','orangeburg','barnwell','blair','lynchburg'}
@@ -156,6 +175,8 @@ def save_message(store, token, message, item, attachments, key, state):
             raise ValueError('Area or job location is missing. Office review required before releasing to techs.')
         if item['type']=='Standard' and not item['ntp_due']:
             raise ValueError('NTP completion date is missing. Office review required before scheduling this normal job.')
+        if item['type']=='Outage' and re.search(r'\b(?:resolved|restored|completed)\b',item['body'],re.I):
+            raise ValueError('Incident thread includes a resolution. Review before opening another active outage.')
         sid = AREA[market]
         row,old = None,{}
     ensure_columns(store,sid,EXTRA)
