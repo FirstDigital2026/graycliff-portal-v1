@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 import graph_import as graph
 
 AREA = {'Florence': 2515846899388292, 'Columbia': 8067039099834244}
+SEARCH_SHEETS = {**AREA, 'History':3889686678294404}
 LEDGER = 'Graycliff Email Intake'
 GUARD = threading.Lock()
 EXTRA = ['Portal Project ID', 'Portal Work Order', 'Portal NTP Due Date',
@@ -143,7 +144,7 @@ def parse(message, attachments):
 
 def locate(store, item):
     found = []
-    for market,sid in AREA.items():
+    for market,sid in SEARCH_SHEETS.items():
         sheet = store.get_sheet(sid,force=True)
         for row in sheet.get('rows',[]):
             v = vals(sheet,row)
@@ -169,7 +170,7 @@ def thread_match(store, message):
     if not thread:
         return None
     matches = []
-    for market,sid in AREA.items():
+    for market,sid in SEARCH_SHEETS.items():
         sheet = store.get_sheet(sid,force=True)
         for row in sheet.get('rows',[]):
             old = vals(sheet,row)
@@ -231,7 +232,7 @@ def save_message(store, token, message, item, attachments, key, state):
     # Existing CRQ classification and scheduled windows always take precedence.
     jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name','')),re.I) else item['type'])
     values['Portal Job Type'] = jobtype
-    closed = bool(old and (str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I)))
+    closed = market=='History' or bool(old and (str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I)))
     if item['ntp_due'] and not closed:
         values['Portal NTP Due Date'] = item['ntp_due']
         if jobtype == 'Standard':
@@ -291,7 +292,7 @@ def save_message(store, token, message, item, attachments, key, state):
             raise RuntimeError('Original email copy unavailable; intake requires review.')
         store.attach_file_to_row(sid,row['id'],filename=eml_name,mime_type='message/rfc822',data=data)
     marker='[Email intake '+key+']'
-    discussions=store.list_row_discussions(sid,row['id'])
+    discussions=store._request('GET',f"/sheets/{sid}/rows/{row['id']}/discussions",query={'includeAll':'true','include':'comments'}).get('data',[])
     if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
         sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
         store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body'][:7000])
@@ -316,7 +317,7 @@ def seed_imported_threads(store, token, folder, db):
             jobkey=recorded.get(key,'');thread=message.get('conversationId')
             if not jobkey or not thread:
                 continue
-            area,rid=jobkey.split(':',1);market=area.title();sid=AREA.get(market)
+            area,rid=jobkey.split(':',1);market=area.title();sid=SEARCH_SHEETS.get(market)
             if not sid:
                 continue
             sheet=ensure_columns(store,sid,EXTRA)
