@@ -34,7 +34,13 @@ def internal_due(original):
 
 def vals(sheet, row):
     columns = {str(c['id']): c['title'] for c in sheet['columns']}
-    return {columns.get(str(c['columnId']), ''): c.get('value', c.get('displayValue', '')) for c in row.get('cells', [])}
+    values = {columns.get(str(c['columnId']), ''): c.get('value', c.get('displayValue', '')) for c in row.get('cells', [])}
+    # TEXT_NUMBER cells may return an integral ID as 7021433.0.
+    # Normalize only integral forms; genuinely different IDs still conflict.
+    for name in ('Portal Project ID', 'Portal Work Order'):
+        value = str(values.get(name) or '').strip()
+        values[name] = re.sub(r'^(\d+)\.0+$', r'\1', value)
+    return values
 
 def write(store, sid, values, rid=None):
     # Mutation timeouts are ambiguous. Never blindly retry a row creation.
@@ -280,7 +286,8 @@ def save_message(store, token, message, item, attachments, key, state):
     discussions=store._request('GET',f"/sheets/{sid}/rows/{row['id']}/discussions",query={'includeAll':'true','include':'comments'}).get('data',[])
     if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
         sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
-        store.add_row_comment(sid,row['id'],marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body'][:7000])
+        comment = marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body']
+        store.add_row_comment(sid,row['id'],comment[:3900])
     return market.lower()+':'+str(row['id'])
 
 def capture_email_files(store,token,message,sid,row_id,attachments,key):
