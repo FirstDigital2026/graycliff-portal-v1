@@ -80,7 +80,9 @@ def parse(message, attachments):
     subject = str(message.get('subject',''))
     body = graph._plain_text((message.get('body') or {}).get('content',''))
     ntp = graph.parse_recognized_ntp(message)
-    pid = re.search(r'\b(?:PID|PRISM(?:\s+ID)?)\s*[:#]?\s*(\d{6,12})(?!\d)', subject,re.I)
+    pid = re.search(r'\b(?:PID|PRISM(?:\s+ID)?|PNG|P(?=\s*#))\s*[:#-]?\s*(\d{6,12})(?!\d)', subject,re.I)
+    if not pid:
+        pid = re.search(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)*["\s]*(\d{7,12})n?\s+\d+\s',subject,re.I)
     crq = re.search(r'\bCRQ\d+\b',subject,re.I)
     outage = bool(re.search(r'\b(?:no light|down fiber|outage|request map location|emergency)\b',subject,re.I))
     if not ntp and not pid and not crq and not outage:
@@ -136,6 +138,10 @@ def parse(message, attachments):
         if parsed.city.lower()=='orangeburge':
             parsed.city='Orangeburg'
     location_text = subject + ' ' + parsed.city + ' ' + parsed.address
+    # A city in the job subject outranks column-layout artifacts in a PDF.
+    subject_cities = [c for c in graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | {'cheraw','sumter','lynchburg'} if re.search(r'\b'+re.escape(c)+r'\b',subject,re.I)]
+    if len(subject_cities)==1:
+        parsed.city=subject_cities[0].title()
     if not parsed.city:
         cities = graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | {'cheraw','sumter','orangeburg','barnwell','blair','lynchburg'}
         matches = [c for c in cities if re.search(r'\b'+re.escape(c)+r'\b',location_text,re.I)]
@@ -152,6 +158,12 @@ def parse(message, attachments):
             'type':'Outage' if outage else ('CRQ' if crq else 'Standard'),
             'subject':subject,'body':body}
 
+def normalized_address(text):
+    text = str(text).lower()
+    for long,short in [('road','rd'),('street','st'),('avenue','ave'),('drive','dr'),('court','ct'),('lane','ln'),('highway','hwy')]:
+        text = re.sub(r'\b'+long+r'\b',short,text)
+    return re.sub(r'[^a-z0-9]','',text)
+
 def locate(store, item):
     found = []
     for market,sid in SEARCH_SHEETS.items():
@@ -162,13 +174,17 @@ def locate(store, item):
             match_pid = item['pid'] and (str(v.get('Portal Project ID','')) == item['pid'] or re.search(r'(?<!\d)'+re.escape(item['pid'])+r'(?!\d)',title))
             match_wo = item['wo'] and str(v.get('Portal Work Order','')) == item['wo']
             normalize = lambda text: re.sub(r'[^a-z0-9]','',str(text).lower())
-            address = normalize(item['address'])
+            address = normalized_address(item['address'])
             # Legacy rows often have a CRQ in the title but no PID column.
             # Accept only the full extracted address on one unique row; never fuzzy-match.
+            canonical_title = title.lower()
+            for long,short in [('road','rd'),('street','st'),('avenue','ave'),('drive','dr'),('court','ct'),('lane','ln'),('highway','hwy')]:
+                canonical_title=re.sub(r'\b'+long+r'\b',short,canonical_title)
             address_pattern=r'(?<![a-z0-9])'+r'[\W_]*'.join(map(re.escape,address))+r'(?![a-z0-9])'
-            match_address = (len(address)>7 and re.search(address_pattern,title.lower())
-                             and not v.get('Portal Project ID')
+            match_address = (len(address)>7 and re.search(address_pattern,canonical_title)
                              and (not item['city'] or not v.get('City') or normalize(v['City']).startswith(normalize(item['city']))))
+            if match_address and item['pid'] and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:
+                raise ValueError('This address already has a different project ID. Office review required.')
             if match_pid or match_wo or match_address:
                 found.append((market,sid,row,v))
     if len(found)>1:
@@ -199,8 +215,15 @@ def message_item(store, message, attachments):
     try:
         item = parse(message,attachments)
     except ValueError as exc:
-        if not linked or not str(exc).startswith('Email format needs review:'):
+        if not str(exc).startswith('Email format needs review:'):
             raise
+        if not linked:
+            subject=str(message.get('subject',''))
+            address=re.search(r'\b(\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#\'-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY)))(?![A-Za-z])',subject,re.I)
+            if address:
+                linked=locate(store,{'pid':'','wo':'','address':address.group(1),'city':''})
+            if not linked:
+                raise
         # Only an established chain may supply context for an otherwise unrecognized reply.
         subject = str(message.get('subject',''))
         if re.search(r'\b(?:PID|PRISM|CRQ)\s*[:#]?\s*\d+',subject,re.I):
@@ -240,7 +263,7 @@ def save_message(store, token, message, item, attachments, key, state):
     values = {'Portal Project ID':item['pid'] or old.get('Portal Project ID',''),
               'Portal Work Order':item['wo'] or old.get('Portal Work Order','')}
     # Existing CRQ classification and scheduled windows always take precedence.
-    jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name','')),re.I) else item['type'])
+    jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name',''))+' '+str(old.get('Notes','')),re.I) else item['type'])
     values['Portal Job Type'] = jobtype
     closed = market=='History' or bool(old and (str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I)))
     if item['ntp_due'] and not closed:
