@@ -26,6 +26,10 @@ try:
     raise AssertionError('Conflicting PID matched by address')
 except ValueError: pass
 try:
+    op.locate(Store(),{'pid':'','wo':'','address':'5033 Erwin Ct','city':'Different City'})
+    raise AssertionError('Existing address with conflicting city was treated as a new job')
+except ValueError: pass
+try:
     op.message_item(Store(),{'subject':'FW: PR - 999 Unknown Road','body':{'content':''}},[])
     raise AssertionError('Unknown address accepted without reliable job data')
 except ValueError: pass

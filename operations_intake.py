@@ -137,6 +137,7 @@ def parse(message, attachments):
             raise ValueError('Incident email contains multiple possible sites. Office review is required.')
         if parsed.city.lower()=='orangeburge':
             parsed.city='Orangeburg'
+    parsed.city=re.sub(r'^(?:Road|Rd|Lane|Ln|Blvd|Boulevard|Dr|Drive|St|Street|Ct|Court|Ave|Avenue)\s+', '', parsed.city, flags=re.I)
     location_text = subject + ' ' + parsed.city + ' ' + parsed.address
     # A city in the job subject outranks column-layout artifacts in a PDF.
     subject_cities = [c for c in graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | {'cheraw','sumter','lynchburg'} if re.search(r'\b'+re.escape(c)+r'\b',subject,re.I)]
@@ -181,8 +182,11 @@ def locate(store, item):
             for long,short in [('road','rd'),('street','st'),('avenue','ave'),('drive','dr'),('court','ct'),('lane','ln'),('highway','hwy')]:
                 canonical_title=re.sub(r'\b'+long+r'\b',short,canonical_title)
             address_pattern=r'(?<![a-z0-9])'+r'[\W_]*'.join(map(re.escape,address))+r'(?![a-z0-9])'
-            match_address = (len(address)>7 and re.search(address_pattern,canonical_title)
-                             and (not item['city'] or not v.get('City') or normalize(v['City']).startswith(normalize(item['city']))))
+            address_exists = len(address)>7 and re.search(address_pattern,canonical_title)
+            city_matches = not item['city'] or not v.get('City') or normalize(v['City']).startswith(normalize(item['city']))
+            if address_exists and not city_matches and not match_pid and not match_wo:
+                raise ValueError('This street address already exists with a different city. Review before creating a job.')
+            match_address = address_exists and city_matches
             if match_address and item['pid'] and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:
                 raise ValueError('This address already has a different project ID. Office review required.')
             if match_pid or match_wo or match_address:
