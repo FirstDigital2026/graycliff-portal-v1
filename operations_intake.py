@@ -267,12 +267,12 @@ def save_message(store, token, message, item, attachments, key, state):
     values = {'Portal Project ID':item['pid'] or old.get('Portal Project ID',''),
               'Portal Work Order':item['wo'] or old.get('Portal Work Order','')}
     # Existing CRQ classification and scheduled windows always take precedence.
-    jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name',''))+' '+str(old.get('Notes','')),re.I) else item['type'])
+    jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name',''))+' '+str(old.get('Notes',''))+' '+str(old.get('Status','')),re.I) else ('Standard' if row else item['type']))
     values['Portal Job Type'] = jobtype
     closed = market=='History' or bool(old and (str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I)))
     if item['ntp_due'] and not closed:
         values['Portal NTP Due Date'] = item['ntp_due']
-        if jobtype == 'Standard':
+        if jobtype == 'Standard' and not row:
             values['Due Date'] = internal_due(item['ntp_due'])
     thread=str(message.get('conversationId') or '')
     try:
@@ -309,12 +309,10 @@ def save_message(store, token, message, item, attachments, key, state):
         write(store,sid,values,row['id'])
         state['updated'] += 1
     capture_email_files(store,token,message,sid,row['id'],attachments,key)
-    marker='[Email intake '+key+']'
-    discussions=store._request('GET',f"/sheets/{sid}/rows/{row['id']}/discussions",query={'includeAll':'true','include':'comments'}).get('data',[])
-    if not any(marker in str(c.get('text','')) for d in discussions for c in d.get('comments',[])):
-        sender=((message.get('from') or {}).get('emailAddress') or {}).get('address','')
-        comment = marker+'\n'+str(message.get('receivedDateTime',''))+' · '+sender+'\n'+item['subject'][:500]+'\n'+item['body']
-        store.add_row_comment(sid,row['id'],comment[:3900])
+    # The operational sheets intentionally use comments to mark work complete.
+    # Preserve that existing workflow: an incoming email is source material,
+    # not a field completion comment. Its full body and images are in the .eml
+    # and extracted attachments above, with its receipt in the intake ledger.
     return market.lower()+':'+str(row['id'])
 
 def capture_email_files(store,token,message,sid,row_id,attachments,key):

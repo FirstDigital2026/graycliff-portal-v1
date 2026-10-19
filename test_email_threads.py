@@ -18,10 +18,17 @@ class Store:
  def list_row_attachments(self,*a):return [{'name':n}for n in self.files]
  def attach_file_to_row(self,*a,filename,**kw):self.files.append(filename)
  def list_row_discussions(self,*a):return [{'comments':[{'text':t}for t in self.comments]}]
- def add_row_comment(self,*a):self.comments.append(a[-1])
+ def add_row_comment(self,*a):raise AssertionError('Incoming mail triggered the legacy comment-to-Complete workflow')
 op.graph.get_message_mime=lambda *a:b'fake original email'
 s=Store();m={'id':'m1','conversationId':'known-chain','subject':'Re: PID#7021433 - 5033 Erwin Ct','body':{'content':'Use the rear entrance. Updated map attached.'},'receivedDateTime':'2026-10-14T20:00:00Z'}
-item=op.message_item(s,m,[]);item['wo']='3721849';state={'created':0,'updated':0};assert op.save_message(s,'',m,item,[],'reply1',state)=='columbia:99';v=op.vals(s.get_sheet(op.AREA['Columbia']),s.row);assert v['Status']=='In Progress'and v['Portal Office Due Date']=='2026-10-19'and v['Portal Planned Date']=='2026-10-18';assert len(s.comments)==1 and 'rear entrance'in s.comments[0];op.save_message(s,'',m,item,[],'reply1',state);assert len(s.comments)==1 and len(s.files)==1
+item=op.message_item(s,m,[]);item['wo']='3721849';state={'created':0,'updated':0};assert op.save_message(s,'',m,item,[],'reply1',state)=='columbia:99';v=op.vals(s.get_sheet(op.AREA['Columbia']),s.row);assert v['Status']=='In Progress'and v['Portal Office Due Date']=='2026-10-19'and v['Portal Planned Date']=='2026-10-18';assert len(s.comments)==0;op.save_message(s,'',m,item,[],'reply1',state);assert len(s.comments)==0 and len(s.files)==1
+op.save_message(s,'',m,dict(item,ntp_due='2026-10-25'),[],'reply1',state)
+v=op.vals(s.get_sheet(op.AREA['Columbia']),s.row)
+assert v['Due Date']=='2026-10-20' and v['Portal NTP Due Date']=='2026-10-25'
+for c in s.row['cells']:
+ if next(x['title']for x in s.columns if x['id']==c['columnId'])=='Portal Job Type':c['value']=''
+op.save_message(s,'',m,dict(item,type='Outage'),[],'reply1',state)
+assert op.vals(s.get_sheet(op.AREA['Columbia']),s.row)['Portal Job Type']=='Standard'
 bad=dict(item,pid='9999999')
 try:op.save_message(s,'',m,bad,[],'bad',state);raise AssertionError('Conflict accepted')
 except ValueError:pass
