@@ -95,6 +95,24 @@ def spectrum_scope(message, attachments):
     return bool(re.search(r'\bSpectrum\b|@(?:[a-z0-9.-]+\.)?charter\.com\b', text, re.I))
 
 
+def category_for_message(subject, body):
+    category = category_for_subject(subject)
+    if category != 'Standard':
+        return category
+    # A bare node is not itself authorization or an incident identifier. Only
+    # promote it when the dispatch body establishes emergency restoration work.
+    node = re.sub(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)+', '', subject.strip(), flags=re.I).strip()
+    if not re.fullmatch(r'(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{4,8}', node, re.I):
+        return category
+    if category_for_subject(body) == 'CRQ':
+        return 'CRQ'
+    if re.search(r'\b(?:no|not an?|without)\s+(?:outage|emergency)\b', body, re.I):
+        return category
+    incident = re.search(r'\b(?:outage|no[ -]+light|low[ -]+light|node\s+(?:100%\s+)?down|fiber\s+cut)\b', body, re.I)
+    dispatch = re.search(r'\b(?:please\s+(?:run|roll|dispatch)|roll\s+(?:a\s+)?splicer|ASAP|en\s*route|engag(?:e|ed|ing))\b', body, re.I)
+    return 'Outage' if incident and dispatch else category
+
+
 def parse(message, attachments):
     subject = str(message.get('subject',''))
     body = graph._plain_text((message.get('body') or {}).get('content',''))
@@ -102,7 +120,7 @@ def parse(message, attachments):
     pid = re.search(r'\b(?:PID|PRISM(?:\s+ID)?|PNG|P(?=\s*#))\s*[:#-]?\s*(\d{6,12})(?!\d)', subject,re.I)
     if not pid:
         pid = re.search(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)*["\s]*(\d{7,12})n?\s+\d+\s',subject,re.I)
-    category = category_for_subject(subject)
+    category = category_for_message(subject, body)
     crq = category == 'CRQ'
     outage = category == 'Outage'
     if not ntp and not pid and not crq and not outage:
@@ -171,7 +189,7 @@ def parse(message, attachments):
     parsed.market = graph._market_for(parsed.city,parsed.address)
     if parsed.city.lower() in {'cheraw','lynchburg'}:
         parsed.market = 'Florence'
-    if parsed.city.lower() in {'orangeburg','barnwell','blair'}:
+    if parsed.city.lower() in {'orangeburg','barnwell','blair','summerton'}:
         parsed.market = 'Columbia'
     # Do not use dates in a quoted chain as a current NTP deadline.
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
