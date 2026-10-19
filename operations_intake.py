@@ -76,6 +76,16 @@ def audit(store, sid, key, **values):
     found = [r for r in sheet.get('rows',[]) if str(vals(sheet,r).get('Message Key','')) == key]
     return write(store,sid,{'Message Key':key,'Last Checked':now(),**values},found[0]['id'] if found else None)
 
+def category_for_subject(subject):
+    # Planned CRQ/night maintenance stays distinct even when its purpose is
+    # repairing low light. A night-time emergency alone is still an outage.
+    if re.search(r'\bCRQ\s*[-#:]?\s*\d*\b|\b(?:night(?:time)?\s+(?:work|maintenance)|maintenance\s+window)\b',subject,re.I):
+        return 'CRQ'
+    if re.search(r'\b(?:no[ -]+light|low[ -]+light|down(?:ed)?[ -]+fiber|outage|request map location|emergency|fiber cut|fiber event|fiber engagement|node\s+(?:100%\s+)?down|ECO[ _-]+OUT)\b',subject,re.I):
+        return 'Outage'
+    return 'Standard'
+
+
 def parse(message, attachments):
     subject = str(message.get('subject',''))
     body = graph._plain_text((message.get('body') or {}).get('content',''))
@@ -83,8 +93,9 @@ def parse(message, attachments):
     pid = re.search(r'\b(?:PID|PRISM(?:\s+ID)?|PNG|P(?=\s*#))\s*[:#-]?\s*(\d{6,12})(?!\d)', subject,re.I)
     if not pid:
         pid = re.search(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)*["\s]*(\d{7,12})n?\s+\d+\s',subject,re.I)
-    crq = re.search(r'\bCRQ\d+\b',subject,re.I)
-    outage = bool(re.search(r'\b(?:no light|down fiber|outage|request map location|emergency)\b',subject,re.I))
+    category = category_for_subject(subject)
+    crq = category == 'CRQ'
+    outage = category == 'Outage'
     if not ntp and not pid and not crq and not outage:
         raise ValueError('Email format needs review: no reliable PID, NTP, CRQ or outage subject.')
     parsed = ntp or graph.ParsedNtp('',pid.group(1) if pid else '',subject)
@@ -156,7 +167,7 @@ def parse(message, attachments):
     # Do not use dates in a quoted chain as a current NTP deadline.
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
             'city':parsed.city,'market':parsed.market,'ntp_due':parsed.due_date,
-            'type':'Outage' if outage else ('CRQ' if crq else 'Standard'),
+            'type':category,
             'subject':subject,'body':body}
 
 def normalized_address(text):
@@ -187,6 +198,9 @@ def locate(store, item):
             if address_exists and not city_matches and not match_pid and not match_wo:
                 raise ValueError('This street address already exists with a different city. Review before creating a job.')
             match_address = address_exists and city_matches
+            existing_type = str(v.get('Portal Job Type') or ('CRQ' if re.search(r'\bCRQ',title+' '+str(v.get('Notes','')),re.I) else 'Standard'))
+            if match_address and item.get('type')=='Outage' and existing_type!='Outage' and not match_pid and not match_wo:
+                raise ValueError('An outage at this address may be a separate event from the existing regular/CRQ job. Office review required before attaching or creating.')
             if match_address and item['pid'] and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:
                 raise ValueError('This address already has a different project ID. Office review required.')
             if match_pid or match_wo or match_address:
