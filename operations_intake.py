@@ -86,6 +86,15 @@ def category_for_subject(subject):
     return 'Standard'
 
 
+def spectrum_scope(message, attachments):
+    """A Graycliff sender alone does not establish the customer's work scope."""
+    text = str(message.get('subject', ''))+'\n'+graph._plain_text((message.get('body') or {}).get('content', ''))
+    text += '\n'+'\n'.join(content for _,content in graph._candidate_document_texts(attachments))
+    if re.search(r'\b(?:Lumos|Kinetic|SEGRA|SEFH\s*\d+|Lewisville)\b', text, re.I):
+        raise ValueError('Outside or mixed Spectrum scope (Lumos/Kinetic/SEGRA). Office review required; no operational job changed.')
+    return bool(re.search(r'\bSpectrum\b|@(?:[a-z0-9.-]+\.)?charter\.com\b', text, re.I))
+
+
 def parse(message, attachments):
     subject = str(message.get('subject',''))
     body = graph._plain_text((message.get('body') or {}).get('content',''))
@@ -229,6 +238,7 @@ def thread_match(store, message):
     return matches[0] if matches else None
 
 def message_item(store, message, attachments):
+    confirmed_scope = spectrum_scope(message, attachments)
     linked = thread_match(store,message)
     try:
         item = parse(message,attachments)
@@ -251,6 +261,10 @@ def message_item(store, message, attachments):
               'address':str(old.get('Task Name','')),'city':str(old.get('City','')),
               'market':linked[0],'ntp_due':'','type':str(old.get('Portal Job Type') or 'Standard'),
               'subject':subject,'body':graph._plain_text((message.get('body') or {}).get('content',''))}
+    # Replies may inherit the scope of one exact existing operational job.
+    # New jobs require affirmative Spectrum evidence, not just a PID or city.
+    if not confirmed_scope and not linked and not locate(store,item):
+        raise ValueError('Spectrum work scope is not established. Office review required before creating a job.')
     return item
 
 def save_message(store, token, message, item, attachments, key, state):
