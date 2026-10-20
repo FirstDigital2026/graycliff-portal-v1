@@ -124,11 +124,15 @@ def draft_event(e,route):
     job=e.get('job',{});complete=e['status']=='Field complete'
     outage=job.get('type')=='Outage'
     hands_off=complete and job.get('type')=='CRQ'
-    title='Hands off — job complete' if hands_off else ('Field work complete — moved to billing preparation' if complete else 'Outage progress update')
+    title='Hands off — job complete' if complete and (hands_off or outage) else ('Field work complete — moved to billing preparation' if complete else 'Outage progress update')
     location=', '.join(x for x in [job.get('title',''),job.get('city','')] if x)
     fields=[('Location',location),('Area',job.get('market',''))]
     if job.get('incidentId'):fields.append(('Incident',job['incidentId']))
     fields.append(('Status','Hands off' if hands_off else e['status']))
+    if hands_off:
+        noc=str(e.get('nocTechnician') or e.get('after',{}).get('Portal NOC Closed By') or '').strip()
+        if not noc:raise ThreadReview('CRQ completion is missing the closing NOC technician. Office review required.')
+        fields.append(('NOC ticket closed by',noc))
     # Only outage emails include submitted comments. Regular completions are
     # brief notices; CRQ completions announce hands off without field notes.
     note=(e.get('note','').strip() or 'Technician reported: '+e['status']+'.') if outage else ''

@@ -26,16 +26,22 @@ store=Store();route=m.resolve_thread(store,'fake',event);assert route['to']==['d
 d=m.draft_event(event,route);assert d['subject']=='Re: Test original outage';assert 'Splicing underway.' in d['text'];assert 'graycliff/spectrum field operations' not in d['text'].lower()
 message=BytesParser(policy=policy.default).parsebytes(m.mime_message(d));assert message['In-Reply-To']=='<original@example.com>';assert message['From'].addresses[0].addr_spec==m.SENDER;assert str(message['Auto-Submitted'])=='auto-generated'
 assert m.eligible(event);assert not m.eligible({**event,'committed':False});assert not m.eligible({**event,'status':'Today'})
-complete=m.draft_event({**event,'status':'Field complete'},route);assert 'billing preparation' in complete['text'];assert m.eligible({**event,'job':{'type':'Standard'},'status':'Field complete'})
+complete=m.draft_event({**event,'status':'Field complete'},route);assert complete['text'].startswith('Hands off — job complete\n');assert 'Splicing underway.' in complete['text'];assert 'billing preparation' in complete['text'];assert m.eligible({**event,'job':{'type':'Standard'},'status':'Field complete'})
+try:
+ m.draft_event({**event,'job':{**event['job'],'type':'CRQ'},'status':'Field complete'},route)
+ raise AssertionError('Missing NOC technician accepted')
+except m.ThreadReview:pass
+noc_preview=m.draft_event({**event,'job':{**event['job'],'type':'CRQ'},'status':'Field complete','nocTechnician':'NOC <Name>'},route)
+assert 'NOC ticket closed by: NOC <Name>' in noc_preview['text'] and 'NOC &lt;Name&gt;' in noc_preview['html']
 for kind in ['Standard','CRQ']:
- regular={**event,'job':{**event['job'],'type':kind},'status':'Field complete','note':'PRIVATE FIELD NOTE <do not email>'}
+ regular={**event,'job':{**event['job'],'type':kind},'status':'Field complete','note':'PRIVATE FIELD NOTE <do not email>','nocTechnician':'Sample NOC Tech'}
  preview=m.draft_event(regular,route)
  assert m.eligible(regular)
  assert 'PRIVATE FIELD NOTE' not in preview['text']+preview['html']
  assert 'Completion findings' not in preview['text']+preview['html']
  assert not m.eligible({**regular,'status':'Working'})
  if kind=='CRQ':
-  assert preview['text'].startswith('Hands off\n')
+  assert preview['text'].startswith('Hands off — job complete\n')
   assert 'Status: Hands off' in preview['text']
   assert 'billing preparation' not in preview['text']+preview['html']
  else:assert 'Field work complete' in preview['text'] and 'billing preparation' in preview['text']
