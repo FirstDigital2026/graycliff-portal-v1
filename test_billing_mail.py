@@ -12,7 +12,10 @@ def spreadsheet(priced=False):
     cells+='<c r="B2"><v>2</v></c><c r="B27"><v>3</v></c>'
     if priced:cells+='<c r="B29"><f>B28*12.34</f><v>0</v></c>'
     out=io.BytesIO()
-    with zipfile.ZipFile(out,'w') as z:z.writestr('xl/worksheets/sheet1.xml','<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row>'+cells+'</row></sheetData></worksheet>')
+    with zipfile.ZipFile(out,'w') as z:
+        z.writestr('xl/worksheets/sheet1.xml','<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1">'+cells+'</row></sheetData></worksheet>')
+        z.writestr('xl/styles.xml','<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="1"><font/></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellXfs></styleSheet>')
+        z.writestr('xl/workbook.xml','<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets/></workbook>')
     return out.getvalue()
 
 class Store:
@@ -25,7 +28,7 @@ class Store:
 class BillingTests(unittest.TestCase):
     def setUp(self):
         self.path=str(Path(__file__).parent/('qa-billing-'+str(uuid.uuid4())+'.sqlite'));self.store=Store();self.sent=[]
-        self.payload={'op':'prepare','sheetId':'2515846899388292','rowId':'123','files':{'spreadsheet':'1','map':'2','workbook':'3'},'workbookRequired':True}
+        self.payload={'op':'prepare','sheetId':'2515846899388292','rowId':'123','files':{'spreadsheet':'1','map':'2','workbook':'3'},'workbookRequired':True,'rates':{'AA'+str(i).zfill(2):2.25 for i in range(17)}}
         self.route={'to':['customer@example.com'],'cc':['office@example.com'],'subject':'TEST ONLY original','messageId':'<original@example.com>','references':[]}
         self.patches=[patch.object(b.mail,'resolve_thread',return_value=self.route),patch.object(b.mail.graph,'access_token',return_value='test'),patch.object(b.mail.graph,'_request',side_effect=lambda *a,**kw:self.sent.append(kw))]
         for p in self.patches:p.start()
@@ -45,8 +48,15 @@ class BillingTests(unittest.TestCase):
         self.assertEqual(m['In-Reply-To'],'<original@example.com>');self.assertEqual(m['To'],'customer@example.com')
         files={a.get_filename():a.get_payload(decode=True) for a in m.iter_attachments()}
         self.assertEqual(files['asbuilt.xlsm'],self.store.book);self.assertEqual(files['splice-map.pdf'],self.store.pdf)
+        self.assertNotEqual(files['quantities - Billing.xlsx'],self.store.raw)
+        with zipfile.ZipFile(io.BytesIO(files['quantities - Billing.xlsx'])) as z:
+            root=b.ET.fromstring(z.read('xl/worksheets/sheet1.xml'));ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            total=root.find('.//s:c[@r="S29"]',ns)
+            self.assertEqual(total.find('s:f',ns).text,'SUM(B29:R29)');self.assertEqual(total.find('s:v',ns).text,'11.25')
+        self.assertNotIn('pricing',d);self.assertNotIn('rates',d)
         b.handle(self.store,self.db,send);self.assertEqual(len(self.sent),1)
         quantities=b.handle(self.store,self.db,{**self.payload,'op':'quantities'})['quantities'];self.assertEqual(quantities['AA00'],5)
+        self.assertEqual(b.handle(self.store,self.db,{**self.payload,'op':'pricing'})['pricing']['amount'],11.25)
     def test_required_map_and_optional_workbook(self):
         p={**self.payload,'files':{'spreadsheet':'1'},'workbookRequired':False,'workbookNotNeeded':True}
         with self.assertRaisesRegex(ValueError,'map'):b.handle(self.store,self.db,p)

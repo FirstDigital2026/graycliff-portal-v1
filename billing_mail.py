@@ -2,6 +2,7 @@
 from __future__ import annotations
 import base64, hashlib, hmac, html, json, os, re, time, uuid, zipfile, io
 import xml.etree.ElementTree as ET
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import PurePath
 from email.message import EmailMessage
 from email import policy
@@ -88,18 +89,81 @@ def quantity_totals(raw):
             for col in 'BCDEFGHIJKLMNOPQR':
                 code=text(cells.get(col+'1'))
                 if not re.fullmatch(r'[A-Z]{2}\d{2}[A-Z]?',code):raise ValueError('The spreadsheet unit-code headers do not match the template.')
-                total=0
+                total=Decimal(0)
                 for row in range(2,28):
                     c=cells.get(col+str(row));value=text(c)
                     if not value:continue
                     if c.find('s:f',ns) is not None:raise ValueError('Enter numeric quantities in the input rows.')
-                    try:n=float(value)
-                    except (TypeError,ValueError):raise ValueError('Every quantity must be a number.')
-                    if not 0<=n<=10000000:raise ValueError('Quantity is outside the supported range.')
+                    try:n=Decimal(value)
+                    except (TypeError,InvalidOperation):raise ValueError('Every quantity must be a number.')
+                    if not n.is_finite() or not 0<=n<=10000000:raise ValueError('Quantity is outside the supported range.')
                     total+=n
-                totals[code]=total
+                totals[code]=float(total)
             return totals
     except (zipfile.BadZipFile,ET.ParseError,KeyError):raise ValueError('The work completed spreadsheet is not a readable .xlsx file.')
+
+def price_spreadsheet(raw, rates):
+    """Add the private rate row to the outgoing copy, keeping the field copy unpriced."""
+    quantities=quantity_totals(raw)
+    if not isinstance(rates,dict) or set(rates)!=set(quantities):raise ValueError('The office unit-rate configuration is incomplete. Nothing was sent.')
+    lines=[];total=Decimal(0)
+    for code,quantity in quantities.items():
+        try:rate=Decimal(str(rates[code]))
+        except InvalidOperation:raise ValueError('The office rate for '+code+' is invalid.')
+        if not rate.is_finite() or not 0<=rate<=1000000:raise ValueError('Invalid office unit rate.')
+        amount=(Decimal(str(quantity))*rate).quantize(Decimal('0.01'),rounding=ROUND_HALF_UP)
+        total+=amount;lines.append({'code':code,'quantity':quantity,'rate':float(rate),'total':float(amount)})
+    ns='http://schemas.openxmlformats.org/spreadsheetml/2006/main';q=lambda n:'{'+ns+'}'+n
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        name=next(n for n in z.namelist() if re.fullmatch(r'xl/worksheets/sheet\d+\.xml',n))
+        sheet=ET.fromstring(z.read(name));styles=ET.fromstring(z.read('xl/styles.xml'))
+        formats=styles.find(q('numFmts'))
+        if formats is None:formats=ET.Element(q('numFmts'));styles.insert(0,formats)
+        fmt=max([163]+[int(f.attrib['numFmtId']) for f in formats])+1
+        ET.SubElement(formats,q('numFmt'),{'numFmtId':str(fmt),'formatCode':'"$"#,##0.00;[Red]("$"#,##0.00)'})
+        formats.set('count',str(len(formats)))
+        fills=styles.find(q('fills'));fill=len(fills);f=ET.SubElement(fills,q('fill'));pat=ET.SubElement(f,q('patternFill'),{'patternType':'solid'});ET.SubElement(pat,q('fgColor'),{'rgb':'FFFFC000'});ET.SubElement(pat,q('bgColor'),{'indexed':'64'});fills.set('count',str(len(fills)))
+        xfs=styles.find(q('cellXfs'));style=len(xfs);ET.SubElement(xfs,q('xf'),{'numFmtId':str(fmt),'fontId':'0','fillId':str(fill),'borderId':'0','xfId':'0','applyNumberFormat':'1','applyFill':'1'});xfs.set('count',str(len(xfs)))
+        data=sheet.find(q('sheetData'));rows={int(r.attrib['r']):r for r in data.findall(q('row'))}
+        quantity_styles={c.attrib['r']:c.attrib.get('s') for c in rows.get(28,[]) if c.tag==q('c')}
+        for n in (28,29):
+            if n not in rows:rows[n]=ET.Element(q('row'),{'r':str(n)});data.append(rows[n])
+        for n in (28,29):
+            for cell in list(rows[n]):
+                if re.fullmatch(r'[B-S]'+str(n),cell.attrib.get('r','')):rows[n].remove(cell)
+        def cell(ref,formula,value,style_id=None):
+            attrs={'r':ref}
+            if style_id is not None:attrs['s']=str(style_id)
+            c=ET.SubElement(rows[int(re.search(r'\d+',ref)[0])],q('c'),attrs)
+            ET.SubElement(c,q('f')).text=formula;ET.SubElement(c,q('v')).text=str(value)
+        for col,line in zip('BCDEFGHIJKLMNOPQR',lines):
+            cell(col+'28','SUM('+col+'2:'+col+'27)',line['quantity'],quantity_styles.get(col+'28'))
+            cell(col+'29','ROUND('+col+'28*'+format(Decimal(str(rates[line['code']])),'f')+',2)',line['total'],style)
+        label=ET.SubElement(rows[28],q('c'),{'r':'S28','t':'inlineStr',**({'s':quantity_styles['S28']} if quantity_styles.get('S28') else {})});is_=ET.SubElement(label,q('is'));ET.SubElement(is_,q('t')).text='Totals'
+        cell('S29','SUM(B29:R29)',str(total),style)
+        # Retain all other workbook parts and macro-free source bytes verbatim.
+        dim=sheet.find(q('dimension'))
+        if dim is not None:dim.set('ref','A1:S29')
+        for row in sorted(list(data),key=lambda e:int(e.attrib['r'])):data.remove(row);data.append(row)
+        book=ET.fromstring(z.read('xl/workbook.xml'));calc=book.find(q('calcPr'))
+        if calc is None:calc=ET.SubElement(book,q('calcPr'))
+        calc.set('calcMode','auto');calc.set('fullCalcOnLoad','1')
+        changes={name:ET.tostring(sheet,encoding='utf-8',xml_declaration=True),'xl/styles.xml':ET.tostring(styles,encoding='utf-8',xml_declaration=True),'xl/workbook.xml':ET.tostring(book,encoding='utf-8',xml_declaration=True)}
+        out=io.BytesIO()
+        with zipfile.ZipFile(out,'w',compression=zipfile.ZIP_DEFLATED) as dest:
+            for item in z.infolist():dest.writestr(item,changes.get(item.filename,z.read(item.filename)))
+    return out.getvalue(),{'amount':float(total),'lines':lines,'basis':'Priced spreadsheet sent to Graycliff; all unit codes included'}
+
+def package_files(files,rates):
+    priced=[];pricing=None
+    for original in files:
+        f=dict(original)
+        if f['role']=='spreadsheet':
+            f['data'],pricing=price_spreadsheet(f['data'],rates)
+            f['name']=PurePath(f['name']).stem+' - Billing.xlsx'
+            f['size']=len(f['data']);f['sha256']=hashlib.sha256(f['data']).hexdigest()
+        priced.append(f)
+    return priced,pricing
 
 def draft(v, route, package_id):
     title=str(v.get('Task Name',''));city=str(v.get('City',''))
@@ -145,27 +209,33 @@ def receipt(row):
 
 def handle(store, db, payload):
     initialize(db);key=str(payload['sheetId'])+':'+str(payload['rowId']);op=payload.get('op')
+    if op=='review_pricing':
+        with db() as c:prepared=c.execute("SELECT * FROM billing_package_outbox WHERE id=? AND job_key=? AND state='PREPARED'",(str(payload.get('id','')),key)).fetchone()
+        if not prepared or time.time()-prepared['created_at']>1800:raise ValueError('Prepare a current package before reviewing pricing.')
+        return {'pricing':json.loads(prepared['snapshot']).get('pricing',{})}
     with db() as c:
         accepted=c.execute("SELECT * FROM billing_package_outbox WHERE job_key=? AND state IN ('ACCEPTED','UNCERTAIN','DISPATCHING') ORDER BY created_at DESC LIMIT 1",(key,)).fetchone()
-    if accepted and op=='quantities':
+    if accepted and op in ('quantities','pricing'):
         if accepted['state']!='ACCEPTED':raise ValueError('Pricing can be calculated after Microsoft accepts the billing email.')
-        return {'quantities':json.loads(accepted['snapshot']).get('quantities',{})}
+        saved=json.loads(accepted['snapshot'])
+        return {'quantities':saved.get('quantities',{}),'pricing':saved.get('pricing',{})}
     if accepted:
         if accepted['state']=='ACCEPTED':return receipt(accepted)
         raise ValueError('A previous send has an uncertain outcome. The office must check Sent Items. It will not be sent again automatically.')
     if op=='prepare':
-        v=fresh_job(store,payload);files=collect(store,payload)
+        v=fresh_job(store,payload);originals=collect(store,payload)
+        files,pricing=package_files(originals,payload.get('rates'))
         route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
         pid=str(uuid.uuid4());d=draft(v,route,pid);mime_message(d,files)
         snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in files],
-              'quantities':quantity_totals(next(f['data'] for f in files if f['role']=='spreadsheet'))}
+              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'pricing':pricing}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
-        return {'id':pid,'state':'PREPARED','to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['files']}
+        return {'id':pid,'state':'PREPARED','pricingApplied':True,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['files']}
     if op!='send':raise ValueError('Unknown billing action.')
     with db() as c:r=c.execute('SELECT * FROM billing_package_outbox WHERE id=? AND job_key=?',(str(payload.get('id','')),key)).fetchone()
     if not r or r['state']!='PREPARED':raise ValueError('Prepare and review this package before sending.')
     if time.time()-r['created_at']>1800:raise ValueError('The review has expired. Prepare the package again.')
-    snap=json.loads(r['snapshot']);fresh_job(store,snap['input']);files=collect(store,snap['input'])
+    snap=json.loads(r['snapshot']);fresh_job(store,snap['input']);files,pricing=package_files(collect(store,snap['input']),snap['input'].get('rates'))
     if [{k:v for k,v in f.items() if k!='data'} for f in files]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
     # Resolve once more: never silently send to a changed email chain.
     route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
