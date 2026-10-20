@@ -105,7 +105,7 @@ def classify(name, raw, ntp_source=False):
     return 'review','Office review required before field release'
 
 def ensure_columns(store,sid):
-    sheet=store.get_sheet(sid);known={c['title'] for c in sheet['columns']};missing=[{'title':n,'type':'TEXT_NUMBER','index':len(known)+i} for i,n in enumerate((n for n in (FACTS_COLUMN,FILES_COLUMN,REVIEW_COLUMN) if n not in known))]
+    sheet=store.get_sheet(sid);known={c['title'] for c in sheet['columns']};missing=[{'title':n,'type':'TEXT_NUMBER','index':len(known)} for i,n in enumerate((n for n in (FACTS_COLUMN,FILES_COLUMN,REVIEW_COLUMN) if n not in known))]
     if missing:store.add_columns(sid,missing)
     return store.get_sheet(sid,force=True)
 
