@@ -56,7 +56,8 @@ def collect(store, payload):
         if len(raw)>2800000:raise ValueError('This package is too large for direct email. Ask the office to submit it manually; nothing was sent.')
         if not raw.startswith(b'%PDF-' if ext=='.pdf' else b'PK'):
             raise ValueError('The '+role+' does not match its file type.')
-        if role=='spreadsheet':quantity_totals(raw)
+        if role=='spreadsheet' and not any(quantity_totals(raw).values()):
+            raise ValueError('The spreadsheet has no completed quantities. Fill it out before submitting billing.')
         result.append({'role':role,'id':aid,'name':name,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'data':raw})
     return result
 

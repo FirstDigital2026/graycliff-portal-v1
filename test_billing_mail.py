@@ -76,5 +76,9 @@ class BillingTests(unittest.TestCase):
         a=b.handle(self.store,self.db,self.payload);c=b.handle(self.store,self.db,self.payload)
         b.handle(self.store,self.db,{**self.payload,'op':'send','id':a['id']});b.handle(self.store,self.db,{**self.payload,'op':'send','id':c['id']})
         self.assertEqual(len(self.sent),1)
+    def test_blank_quantity_sheet_blocked(self):
+        with patch.object(b,'quantity_totals',return_value={'AA00':0}):
+            with self.assertRaisesRegex(ValueError,'no completed quantities'):b.handle(self.store,self.db,self.payload)
+        self.assertEqual(self.sent,[])
 
 if __name__=='__main__':unittest.main()
