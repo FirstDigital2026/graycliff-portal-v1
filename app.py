@@ -2304,5 +2304,8 @@ def not_found(_):
     return render_template("error.html", title="Not found", message="That record could not be found."), 404
 
 
+from billing_mail import install as install_portal_billing
+install_portal_billing(app, store, db)
+
 if __name__ == "__main__":
     app.run(debug=True)
