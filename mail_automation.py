@@ -198,7 +198,7 @@ def attach_update_photos(draft,event,store):
         total+=len(raw)
         if total>2*1024*1024:raise ThreadReview('The selected update photos are too large for one email. Office review required; no photos were omitted.')
         if not raw or len(raw)>1024*1024 or not raw.startswith(b'\xff\xd8') or hashlib.sha256(raw).hexdigest()!=ref.get('sha256'):raise ThreadReview('The saved update photo changed or is unavailable. No email sent.')
-        cid='outage-'+event['eventId']+'-'+aid+'@firstdigitalsc.com'
+        cid='fdgc-'+hashlib.sha256((event['eventId']+':'+aid).encode()).hexdigest()[:32]+'@firstdigitalsc.com'
         label='Outage update photo '+str(index)+' of '+str(len(photos))
         result['inlinePhotos'].append({'cid':cid,'name':'Outage-update-photo-'+str(index)+'.jpg','content':base64.b64encode(raw).decode('ascii')})
         images.append('<p><strong>'+label+'</strong><br><img src="cid:'+html.escape(cid)+'" alt="'+label+'" width="640" style="width:100%;max-width:640px;height:auto"></p>')
@@ -213,8 +213,15 @@ def mime_message(draft):
     m['Message-ID']='<fdgc-'+draft['eventId']+'@firstdigitalsc.com>'
     m['In-Reply-To']=draft['parent'];m['References']=' '.join(draft['references'])
     m['Auto-Submitted']='auto-generated';m['X-Auto-Response-Suppress']='All';m['X-FirstDigital-Event']=draft['eventId']
-    m.set_content(draft['text']);m.add_alternative(draft['html'],subtype='html')
+    # Short ASCII IDs avoid RFC 2047 encoding, which breaks Outlook cid matching.
+    # Normalize saved drafts too, without changing their selected photo bytes.
+    body=draft['html'];photos=[]
     for photo in draft.get('inlinePhotos',[]):
+        cid=photo['cid'] if len(photo['cid'])<=60 else 'fdgc-'+hashlib.sha256(photo['cid'].encode()).hexdigest()[:32]+'@firstdigitalsc.com'
+        body=body.replace('cid:'+photo['cid'],'cid:'+cid)
+        photos.append({**photo,'cid':cid})
+    m.set_content(draft['text']);m.add_alternative(body,subtype='html')
+    for photo in photos:
         m.get_payload()[-1].add_related(base64.b64decode(photo['content'],validate=True),maintype='image',subtype='jpeg',cid='<'+photo['cid']+'>',filename=photo['name'],disposition='inline')
     return m.as_bytes()
 

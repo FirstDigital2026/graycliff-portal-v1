@@ -23,6 +23,22 @@ class OutagePhotoTests(unittest.TestCase):
     def test_completion_retains_findings_and_billing_message(self):
         e={**EVENT,'status':'Field complete'};d=m.attach_update_photos(m.draft_event(e,ROUTE),e,Store())
         self.assertTrue(d['text'].startswith('Hands off — job complete'));self.assertIn('billing preparation',d['text']);self.assertIn('Splicing underway.',d['text'])
+    def test_outlook_content_id_is_literal_ascii_with_real_length_attachment_id(self):
+        photo={**PHOTO,'id':'1234567890123456'}
+        class LongId(Store):
+            def list_row_attachments(self,*args):return [{'id':int(photo['id']),'name':photo['name']}]
+        e={**EVENT,'photos':[photo]};d=m.attach_update_photos(m.draft_event(e,ROUTE),e,LongId())
+        # Also cover already prepared drafts using the old long identifier.
+        for legacy in (False,True):
+            if legacy:
+                old=d['inlinePhotos'][0]['cid'];long='outage-'+EVENT['eventId']+'-'+photo['id']+'@firstdigitalsc.com'
+                d['html']=d['html'].replace(old,long);d['inlinePhotos'][0]['cid']=long
+            wire=m.mime_message(d);msg=BytesParser(policy=policy.default).parsebytes(wire)
+            picture=next(p for p in msg.walk() if p.get_content_type()=='image/jpeg')
+            cid=str(picture['Content-ID']).strip('<>')
+            self.assertLessEqual(len(cid),60);self.assertIn('cid:'+cid,msg.get_body(preferencelist=('html',)).get_content())
+            raw_header=next(line for line in wire.split(b'\r\n') if line.startswith(b'Content-ID:'))
+            self.assertNotIn(b'=?',raw_header);self.assertEqual(raw_header,b'Content-ID: <'+cid.encode('ascii')+b'>')
     def test_no_photo_does_not_change_existing_emails(self):
         e={**EVENT,'photos':[]};d=m.draft_event(e,ROUTE);self.assertEqual(m.attach_update_photos(d,e,Store()),d)
     def test_multiple_photos_are_all_inline_in_the_same_message(self):
