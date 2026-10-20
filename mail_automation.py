@@ -137,17 +137,16 @@ def draft_event(e,route):
     # brief notices; CRQ completions announce hands off without field notes.
     note=(e.get('note','').strip() or 'Technician reported: '+e['status']+'.') if outage else ''
     ending='' if hands_off else ('The job has moved to billing preparation. The billing package will follow separately.' if complete else 'Progress will be updated as field reports are saved.')
-    actor=e.get('actor',{}).get('name','First Digital technician')
     role='Operations' if e.get('actor',{}).get('role')=='office' else 'Field Technician'
     footer='This automated message was sent by the First Digital field processing app using '+('the saved job update.' if role=='Operations' else 'the technician’s submitted update.')
     comments=('Completion findings' if complete else 'Technician update')+':\n'+note if outage else ''
-    text='\n\n'.join(part for part in [title,'\n'.join(k+': '+v for k,v in fields if v),comments,ending,actor+'\n'+role+' | First Digital LLC\n'+SENDER+'\nSecond to None',footer] if part)
+    text='\n\n'.join(part for part in [title,'\n'.join(k+': '+v for k,v in fields if v),comments,ending,'First Digital Operations\n'+SENDER+'\nSecond to None',footer] if part)
     esc=html.escape
     body='<h2>'+esc(title)+'</h2>'+''.join('<p><strong>'+esc(k)+':</strong> '+esc(v)+'</p>' for k,v in fields if v)
     if outage:body+='<p><strong>'+('Completion findings' if complete else 'Technician update')+'</strong></p><p>'+esc(note).replace('\n','<br>')+'</p>'
     if ending:body+='<p>'+esc(ending)+'</p>'
     body+='<hr>'
-    body+='<img src="'+LOGO+'" width="170" alt="First Digital — Second to None"><p><strong>'+esc(actor)+'</strong><br>'+role+' | <strong>First Digital LLC</strong><br>'+SENDER+'</p><p><em>'+esc(footer)+'</em></p>'
+    body+='<img src="'+LOGO+'" width="170" alt="First Digital — Second to None"><p><strong>First Digital Operations</strong><br>'+SENDER+'</p><p><em>'+esc(footer)+'</em></p>'
     subject=route['subject'] if re.match(r'^\s*re:',route['subject'],re.I) else 'Re: '+route['subject']
     return {'subject':subject,'to':route['to'],'cc':route['cc'],'parent':route['messageId'],
             'references':list(dict.fromkeys(route.get('references',[])+[route['messageId']]))[-30:],

@@ -24,7 +24,7 @@ class Store:
  def get_sheet(self,*args,**kwargs):return {'columns':[{'id':1,'title':'Status'}],'rows':[{'id':123,'cells':[{'columnId':1,'value':'In Progress'}]}]}
 store=Store();route=m.resolve_thread(store,'fake',event);assert route['to']==['dispatch@example.com','office@firstdigitalsc.com'];assert route['cc']==['coord@example.com']
 d=m.draft_event(event,route);assert d['subject']=='Re: Test original outage';assert 'Splicing underway.' in d['text'];assert 'graycliff/spectrum field operations' not in d['text'].lower()
-message=BytesParser(policy=policy.default).parsebytes(m.mime_message(d));assert message['In-Reply-To']=='<original@example.com>';assert message['From'].addresses[0].addr_spec==m.SENDER;assert str(message['Auto-Submitted'])=='auto-generated'
+assert 'Test Tech' not in d['text'] and 'Test Tech' not in d['html'];assert 'First Digital Operations' in d['html'];message=BytesParser(policy=policy.default).parsebytes(m.mime_message(d));assert message['In-Reply-To']=='<original@example.com>';assert message['From'].addresses[0].addr_spec==m.SENDER;assert str(message['Auto-Submitted'])=='auto-generated'
 assert m.eligible(event);assert not m.eligible({**event,'committed':False});assert not m.eligible({**event,'status':'Today'})
 complete=m.draft_event({**event,'status':'Field complete'},route);assert complete['text'].startswith('Hands off — job complete\n');assert 'Splicing underway.' in complete['text'];assert 'billing preparation' in complete['text'];assert m.eligible({**event,'job':{'type':'Standard'},'status':'Field complete'})
 try:
