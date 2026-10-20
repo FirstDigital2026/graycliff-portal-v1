@@ -24,7 +24,7 @@ GUARD = threading.Lock()
 EXTRA = ['Portal Project ID', 'Portal Work Order', 'Portal NTP Due Date',
          'Portal Intake Key', 'Portal Job Type', 'Portal Incident ID',
          'Portal Claimed By', 'Assigned Technician', 'Portal Assigned At',
-         'Portal Email Threads', 'Portal Email Updated At']
+         'Portal Email Threads', 'Portal Email Updated At','Portal Field Document Review']
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -355,6 +355,15 @@ def save_message(store, token, message, item, attachments, key, state):
         write(store,sid,values,row['id'])
         state['updated'] += 1
     capture_email_files(store,token,message,sid,row['id'],attachments,key)
+    if market!='History':
+        # Nonfinancial details and safe field documents are separate from the
+        # retained original NTP/email. A document problem must not suppress dispatch.
+        try:
+            from field_documents import sync_row
+            sync_row(store,sid,row['id'])
+            write(store,sid,{'Portal Field Document Review':''},row['id'])
+        except Exception:
+            write(store,sid,{'Portal Field Document Review':'Field-document extraction needs office review. Original source files remain office-only.'},row['id'])
     # The operational sheets intentionally use comments to mark work complete.
     # Preserve that existing workflow: an incoming email is source material,
     # not a field completion comment. Its full body and images are in the .eml

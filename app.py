@@ -2306,6 +2306,8 @@ def not_found(_):
 
 from billing_mail import install as install_portal_billing
 install_portal_billing(app, store, db)
+from field_documents import install as install_portal_field_documents
+install_portal_field_documents(app, store)
 
 if __name__ == "__main__":
     app.run(debug=True)
