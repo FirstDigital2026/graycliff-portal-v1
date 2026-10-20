@@ -1,4 +1,4 @@
-"""Original-thread email preparation. Production sending is deliberately disarmed.
+"""Original-thread email updates, enabled only after an explicit activation time.
 
 No historical job scan creates messages. Only committed, durable portal events
 after installation enter the outbox. Paused drafts never become sendable merely
@@ -15,7 +15,7 @@ from email.utils import getaddresses, formatdate
 from pathlib import Path
 import graph_import as graph
 
-SEND_ARMED = False  # User explicitly requested no email sends, including tests.
+SEND_ARMED = True  # User approved activation; the database policy is also required.
 OWNER_SERVICE = 'srv-d9p0jflbedkc73ds5tn0'
 SENDER = 'graycliffjobs@firstdigitalsc.com'
 ROOT = 'https://firstdigitalsc.com/wp-json'
@@ -159,6 +159,10 @@ def mime_message(draft):
     m.set_content(draft['text']);m.add_alternative(draft['html'],subtype='html')
     return m.as_bytes()
 
+def after_activation(event_time,activation_time):
+    try:return datetime.fromisoformat(event_time.replace('Z','+00:00'))>=datetime.fromisoformat(activation_time.replace('Z','+00:00'))
+    except (ValueError,TypeError,AttributeError):return False
+
 def dispatch(db,event_id,store=None):
     # This guard executes before tokens, transport, or changes to sent status.
     if not SEND_ARMED:raise RuntimeError('Email sending is disarmed. No email was sent.')
@@ -166,8 +170,12 @@ def dispatch(db,event_id,store=None):
         row=c.execute('SELECT * FROM mail_event_outbox WHERE event_id=?',(event_id,)).fetchone()
         if not row or row['state']!='READY' or not row['approved_at']:
             raise RuntimeError('This event has not been explicitly released for sending.')
+        policy=c.execute("SELECT value FROM mail_bridge_meta WHERE key='live_after'").fetchone()
+        e=json.loads(row['payload'])
+        if not policy or not after_activation(e['at'],policy[0]):
+            raise RuntimeError('Email sending is paused or this update predates activation.')
         if store is None:raise RuntimeError('Current job status must be verified before sending.')
-        e=json.loads(row['payload']);sheet=store.get_sheet(int(e['sheetId']),force=True)
+        sheet=store.get_sheet(int(e['sheetId']),force=True)
         fresh=next((r for r in sheet.get('rows',[]) if str(r['id'])==str(e['rowId'])),None)
         columns={str(col['id']):col['title'] for col in sheet['columns']}
         values={columns.get(str(cell['columnId'])):cell.get('value','') for cell in (fresh or {}).get('cells',[])}
@@ -206,6 +214,7 @@ def backup_check(db):
 
 def report(db):
     with db() as c:
+        policy=c.execute("SELECT value FROM mail_bridge_meta WHERE key='live_after'").fetchone()
         backup=c.execute("SELECT value FROM mail_bridge_meta WHERE key='backup_result'").fetchone()
         counts={r['state']:r['n'] for r in c.execute('SELECT state,count(*) n FROM mail_event_outbox GROUP BY state')}
         rows=c.execute("SELECT * FROM mail_event_outbox WHERE state!='NOT_REQUIRED' ORDER BY seq DESC LIMIT 15").fetchall()
@@ -214,8 +223,10 @@ def report(db):
         d=json.loads(r['draft']) if r['draft'] else {}
         drafts.append({'jobKey':r['job_key'],'title':d.get('title',r['job_key']),'state':r['state'],
             'subject':d.get('subject',''),'recipients':d.get('to',[])+d.get('cc',[]),'text':d.get('text',''),'detail':r['detail']})
-    return {'sending':'PAUSED','checkedAt':now(),'counts':counts,'drafts':drafts,'backup':json.loads(backup[0]) if backup else None,
-            'detail':'Updates are prepared for review. Sending is disarmed; paused drafts are never automatically released.'}
+    live=bool(SEND_ARMED and policy and policy[0])
+    return {'sending':'LIVE' if live else 'PAUSED','checkedAt':now(),'counts':counts,'drafts':drafts,'backup':json.loads(backup[0]) if backup else None,
+            'liveAfter':policy[0] if live else None,
+            'detail':'Email updates are enabled for new saved status changes. Previously paused drafts remain held.' if live else 'Updates are prepared for review. Sending is paused; paused drafts are never automatically released.'}
 
 def prepare(store,db):
     if os.getenv('RENDER_SERVICE_ID','')!=OWNER_SERVICE:return {'skipped':True}
@@ -246,7 +257,7 @@ def prepare(store,db):
                 token=token or graph.access_token();route=resolve_thread(store,token,e);draft=draft_event(e,route)
                 # Future activation applies only to new events after an explicit
                 # activation timestamp. Existing PAUSED drafts never auto-release.
-                ready=bool(live_after and e['at']>=live_after)
+                ready=bool(live_after and after_activation(e['at'],live_after))
                 with db() as c:c.execute("UPDATE mail_event_outbox SET state=?,draft=?,prepared_at=?,approved_at=?,detail=? WHERE event_id=?",
                     ('READY' if ready else 'PAUSED',json.dumps(draft),now(),now() if ready else None,
                      'New event allowed by explicitly enabled policy.' if ready else 'Prepared only. Sending is disarmed.',e['eventId']))
@@ -266,7 +277,8 @@ def prepare(store,db):
         with db() as c:c.execute("INSERT OR REPLACE INTO mail_bridge_meta VALUES('last_ok',?)",(now(),))
         return result
     except Exception as ex:
-        failure={'sending':'PAUSED','checkedAt':now(),'detail':'Email preparation needs attention. Sending remains disarmed.','error':type(ex).__name__}
+        mode=report(db)['sending']
+        failure={'sending':mode,'checkedAt':now(),'detail':'Email processing needs attention. Uncertain sends are held for review.','error':type(ex).__name__}
         with db() as c:c.execute("INSERT OR REPLACE INTO mail_bridge_meta VALUES('last_error',?)",(json.dumps(failure),))
         try:bridge(store,'POST','/fdgc/v1/report',failure)
         except Exception:pass

@@ -189,7 +189,7 @@ def parse(message, attachments):
     parsed.market = graph._market_for(parsed.city,parsed.address)
     if parsed.city.lower() in {'cheraw','lynchburg'}:
         parsed.market = 'Florence'
-    if parsed.city.lower() in {'orangeburg','barnwell','blair','summerton'}:
+    if parsed.city.lower() in {'orangeburg','barnwell','blair','summerton','edgefield'}:
         parsed.market = 'Columbia'
     # Do not use dates in a quoted chain as a current NTP deadline.
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
@@ -470,6 +470,24 @@ def seed_imported_threads(store, token, folder, db):
     with db() as connection:
         connection.execute("INSERT OR REPLACE INTO operations_meta VALUES ('thread_seed_v2','done')")
 
+def notify_import_assignment(store,jobkey,message_key):
+    # Only the original email creating this job may notify its automatic assignee.
+    # The signed portal endpoint records a durable per-assignment receipt before
+    # sending, so retries cannot repeat a phone alert after an uncertain response.
+    area,rid=jobkey.split(':',1)
+    market={'florence':'Florence','columbia':'Columbia'}.get(area)
+    if not market:return None
+    sheet=store.get_sheet(AREA[market],force=True)
+    rows=[r for r in sheet.get('rows',[]) if str(r['id'])==rid]
+    if len(rows)!=1:return None
+    v=vals(sheet,rows[0])
+    if str(v.get('Portal Intake Key',''))!=message_key or not v.get('Portal Claimed By'):return None
+    try:
+        from mail_automation import bridge
+        return bridge(store,'POST','/fdgc/v1/assignment-alert',{'jobKey':jobkey})
+    except Exception:
+        return {'state':'NEEDS_ATTENTION','detail':'Assignment saved; phone notification could not be confirmed. Check phone delivery in System checks and contact the technician.'}
+
 def run(store, db):
     # Three historical services use this repository. Only one may consume Inbox.
     if os.getenv('RENDER_SERVICE_ID','') != 'srv-d9p0jflbedkc73ds5tn0':
@@ -504,7 +522,10 @@ def run(store, db):
                 phase='saving job and source files'
                 jobkey = save_message(store,token,message,item,attachments,key,stats)
                 phase='confirming import'
-                audit(store,sid,key,State='Imported',Detail='Job and original email saved; existing field status preserved.',**{'Job Key':jobkey})
+                phone=notify_import_assignment(store,jobkey,key)
+                detail='Job and original email saved; existing field status preserved.'
+                if phone:detail+=' Phone alert: '+phone.get('detail','Delivery needs attention.')
+                audit(store,sid,key,State='Imported',Detail=detail,**{'Job Key':jobkey})
                 with db() as connection:
                     connection.execute('INSERT OR REPLACE INTO operations_mail VALUES (?,?,?)',(key,jobkey,'Imported'))
                 graph.move_message(token,message['id'],imported)

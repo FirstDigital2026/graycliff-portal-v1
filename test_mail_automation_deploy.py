@@ -5,6 +5,7 @@ from email.message import EmailMessage
 from email.parser import BytesParser
 from email import policy
 import mail_automation as m
+m.SEND_ARMED=False  # Isolated fixture; real email transport is always mocked.
 
 scratch=Path(__file__).parent/('qa-mail-'+str(uuid.uuid4()));scratch.mkdir();path=scratch/'qa.sqlite3'
 @contextmanager
@@ -67,6 +68,22 @@ m.prepare(store,db);m.prepare(store,db)
 with db() as c:
  rows=c.execute('SELECT state FROM mail_event_outbox').fetchall();assert len(rows)==1 and rows[0]['state']=='PAUSED'
 assert not transports;assert reports[-1]['sending']=='PAUSED'
+m.SEND_ARMED=True
+with db() as c:c.execute("INSERT OR REPLACE INTO mail_bridge_meta VALUES('live_after',?)",(m.now(),))
+m.prepare(store,db)
+assert reports[-1]['sending']=='LIVE' and not transports
+with db() as c:assert c.execute('SELECT state FROM mail_event_outbox').fetchone()[0]=='PAUSED'
+# Deployment alone cannot release mail, even if a row were marked READY.
+with db() as c:
+ c.execute("DELETE FROM mail_bridge_meta WHERE key='live_after'")
+ c.execute("UPDATE mail_event_outbox SET state='READY',approved_at=?",(m.now(),))
+try:m.dispatch(db,event['eventId'],store);raise AssertionError('missing activation gate')
+except RuntimeError as ex:assert 'activation' in str(ex) or 'paused' in str(ex)
+assert not transports
+with db() as c:
+ c.execute("UPDATE mail_event_outbox SET state='PAUSED',approved_at=NULL")
+ c.execute("INSERT OR REPLACE INTO mail_bridge_meta VALUES('live_after','2000-01-01T00:00:00+00:00')")
+m.SEND_ARMED=False
 check=m.backup_check(db);assert check['ok'];assert list((path.parent/'graycliff-backups').glob('*.sqlite3'))
 
 # Even if deliberately armed in this isolated fixture, sending requires a
