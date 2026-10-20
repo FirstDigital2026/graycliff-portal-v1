@@ -10,8 +10,8 @@ Work Order Date:  10/20/2026                        Est. Completion:    10/27/20
 Vendor Name:      Example Contractor                Issued By:          Example, Coordinator
 
 Job                      Job Address                     Site Contact Name         Site Phone
-EXAMPLE,CONTACT          614 5TH STREET EXT              EXAMPLE,CONTACT           (555) 555-0100
-                         JACKSON, SC 29831
+EXAMPLE,CONTACT          100 EXAMPLE WAY                 EXAMPLE,CONTACT           (555) 555-0100
+                         SAMPLE CITY, SC 00000
 Please do not start work without the necessary approved permits for both Underground and Aerial jobs.
 Comments: NTP for push light
 '''
