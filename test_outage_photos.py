@@ -25,6 +25,13 @@ class OutagePhotoTests(unittest.TestCase):
         self.assertTrue(d['text'].startswith('Hands off — job complete'));self.assertIn('billing preparation',d['text']);self.assertIn('Splicing underway.',d['text'])
     def test_no_photo_does_not_change_existing_emails(self):
         e={**EVENT,'photos':[]};d=m.draft_event(e,ROUTE);self.assertEqual(m.attach_update_photos(d,e,Store()),d)
+    def test_multiple_photos_are_all_inline_in_the_same_message(self):
+        other={**PHOTO,'id':'901','name':'Outage-update-'+'b'*24+'.jpg'}
+        class Multiple(Store):
+            def list_row_attachments(self,*args):return [{'id':900,'name':PHOTO['name']},{'id':901,'name':other['name']}]
+        e={**EVENT,'photos':[PHOTO,other]};d=m.attach_update_photos(m.draft_event(e,ROUTE),e,Multiple())
+        msg=BytesParser(policy=policy.default).parsebytes(m.mime_message(d));parts=[p for p in msg.walk() if p.get_content_type()=='image/jpeg']
+        self.assertEqual(len(parts),2);self.assertNotEqual(parts[0]['Content-ID'],parts[1]['Content-ID']);self.assertIn('photo 2 of 2',d['html'])
     def test_wrong_job_changed_photo_and_extra_selection_are_blocked(self):
         for e in ({**EVENT,'job':{'type':'CRQ'}},{**EVENT,'photos':[PHOTO,PHOTO]},{**EVENT,'photos':[{**PHOTO,'sheetId':'22'}]},{**EVENT,'photos':[{**PHOTO,'id':'901'}]},{**EVENT,'photos':[{**PHOTO,'sha256':'0'*64}]}):
             with self.assertRaises(m.ThreadReview):m.attach_update_photos(m.draft_event(EVENT,ROUTE),e,Store())

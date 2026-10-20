@@ -1,6 +1,6 @@
 """Extract nonfinancial NTP facts; retain commercial source files for office use."""
 from __future__ import annotations
-import io,json,re,zipfile,hashlib
+import io,json,re,zipfile,hashlib,subprocess,sys
 from pathlib import PurePath
 from email import policy
 from email.parser import BytesParser
@@ -14,6 +14,31 @@ NTP=re.compile(r'\b(?:NTP|Notice\s+to\s+Proceed)\b',re.I)
 FACT_KEYS=('prism','workOrder','purchaseOrder','constructionType','coordinator','workOrderDate','estimatedCompletion','vendor','issuedBy','jobName','address','cityStateZip','siteContact','sitePhone','comments','permitNotice')
 LABELS={'prism':r'PRISM\s+ID','workOrder':r'Work\s+Order\s*#','purchaseOrder':r'PO\s*#','_price':r'PO\s*Amount','constructionType':r'Const\s*Type','coordinator':r'Const\s*Coordinator','workOrderDate':r'Work\s*Order\s*Date','estimatedCompletion':r'Est\.?\s*Completion','vendor':r'Vendor\s*Name','issuedBy':r'Issued\s*By','comments':r'Comments'}
 LABEL_RE=re.compile(r'(?P<label>'+'|'.join('(?P<'+k+'>'+v+')' for k,v in LABELS.items())+r')\s*:',re.I)
+
+def pdf_text(raw):
+    """Untrusted PDFs run in a disposable, memory-limited process, never the web worker."""
+    if len(raw)>8*1024*1024:return ''
+    program='''
+import io,sys
+try:
+ import resource
+ resource.setrlimit(resource.RLIMIT_AS,(128*1024*1024,128*1024*1024))
+ resource.setrlimit(resource.RLIMIT_CPU,(8,8))
+ from pypdf import PdfReader
+ reader=PdfReader(io.BytesIO(sys.stdin.buffer.read(8*1024*1024+1)))
+ if len(reader.pages)>12:sys.exit(0)
+ parts=[];size=0
+ for page in reader.pages:
+  value=page.extract_text(extraction_mode='layout') or '';size+=len(value)
+  if size>200000:sys.exit(0)
+  parts.append(value)
+ sys.stdout.write('\\n'.join(parts))
+except (Exception,MemoryError):sys.exit(0)
+'''
+    try:
+        result=subprocess.run([sys.executable,'-c',program],input=raw,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=12)
+        return result.stdout.decode('utf-8',errors='replace') if result.returncode==0 and len(result.stdout)<800000 else ''
+    except (OSError,subprocess.TimeoutExpired):return ''
 
 def safe_text(value):
     lines=[]
@@ -66,7 +91,7 @@ def normalize_id(value):
 def documents(raw, name, depth=0):
     if depth>2 or len(raw)>30*1024*1024:return []
     if name.lower().endswith('.pdf'):
-        text=graph._pdf_text(raw)
+        text=pdf_text(raw)
         return [(name,text,raw)] if text else []
     if name.lower().endswith('.zip'):
         result=[]
@@ -97,7 +122,7 @@ def classify(name, raw, ntp_source=False):
             if not ntp_source and not NTP.search(text) and not FINANCIAL.search(text):return 'preview','Field email preview; original download stays with office'
         return 'office','Original email or package retained by office'
     if ext=='.pdf':
-        text=graph._pdf_text(raw)
+        text=pdf_text(raw)
         if NTP.search(text) or FINANCIAL.search(text):return 'office','NTP or commercial source document'
         return ('field','Technical PDF; no commercial fields detected') if len(text.strip())>30 else ('review','Image-only PDF requires office review')
     if ext in ('.jpg','.jpeg','.png','.webp','.gif','.heic'):
@@ -163,6 +188,9 @@ def sync_row(store,sid,rid,force=False):
     return {'facts':len(facts),'files':len(policy_map),'officeOnly':sum(p['mode'] in ('office','review') for p in policy_map.values())}
 
 def install(app,store):
+    # Legacy email intake uses the same PDF reader. Keep it outside the web
+    # process and under the same limits, including before field-file extraction.
+    graph._pdf_text=pdf_text
     import os,time,hmac
     from flask import request,jsonify
     path='/api/portal/field-review'

@@ -155,19 +155,22 @@ def draft_event(e,route):
 def attach_update_photos(draft,event,store):
     photos=event.get('photos') or []
     if not photos:return draft
-    if event.get('job',{}).get('type')!='Outage' or len(photos)>1:raise ThreadReview('Unexpected outage photo selection. Office review required.')
+    if event.get('job',{}).get('type')!='Outage' or len(photos)>10 or len({str(p.get('id','')) for p in photos})!=len(photos):raise ThreadReview('Unexpected outage photo selection. Office review required.')
     allowed={str(a['id']):a for a in store.list_row_attachments(int(event['sheetId']),int(event['rowId']))}
-    result={**draft,'inlinePhotos':[]};images=[]
-    for ref in photos:
+    result={**draft,'inlinePhotos':[]};images=[];total=0
+    for index,ref in enumerate(photos,1):
         aid=str(ref.get('id',''));sid=str(ref.get('sheetId',''));a=allowed.get(aid)
         if not aid.isdigit() or sid!=str(event['sheetId']) or not a or a.get('name')!=ref.get('name') or not re.fullmatch(r'Outage-update-[a-f0-9]{24}\.jpg',ref.get('name','')):raise ThreadReview('The update photo could not be verified on this job. No email sent.')
         raw,_,_=store.download_attachment(int(sid),int(aid))
+        total+=len(raw)
+        if total>2*1024*1024:raise ThreadReview('The selected update photos are too large for one email. Office review required; no photos were omitted.')
         if not raw or len(raw)>1024*1024 or not raw.startswith(b'\xff\xd8') or hashlib.sha256(raw).hexdigest()!=ref.get('sha256'):raise ThreadReview('The saved update photo changed or is unavailable. No email sent.')
         cid='outage-'+event['eventId']+'-'+aid+'@firstdigitalsc.com'
-        result['inlinePhotos'].append({'cid':cid,'name':'Outage-update-photo.jpg','content':base64.b64encode(raw).decode('ascii')})
-        images.append('<p><strong>Outage update photo</strong><br><img src="cid:'+html.escape(cid)+'" alt="Outage update photo" width="640" style="width:100%;max-width:640px;height:auto"></p>')
+        label='Outage update photo '+str(index)+' of '+str(len(photos))
+        result['inlinePhotos'].append({'cid':cid,'name':'Outage-update-photo-'+str(index)+'.jpg','content':base64.b64encode(raw).decode('ascii')})
+        images.append('<p><strong>'+label+'</strong><br><img src="cid:'+html.escape(cid)+'" alt="'+label+'" width="640" style="width:100%;max-width:640px;height:auto"></p>')
     result['html']=result['html'].replace('<hr>',''.join(images)+'<hr>',1)
-    result['text']+='\n\nOutage update photo included with this message.'
+    result['text']+='\n\n'+str(len(photos))+' outage update photo(s) included with this message.'
     return result
 
 def mime_message(draft):
