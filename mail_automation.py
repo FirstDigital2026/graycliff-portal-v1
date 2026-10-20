@@ -122,20 +122,27 @@ def resolve_thread(store,token,e):
 
 def draft_event(e,route):
     job=e.get('job',{});complete=e['status']=='Field complete'
-    title='Field work complete — moved to billing preparation' if complete else 'Outage progress update'
+    outage=job.get('type')=='Outage'
+    hands_off=complete and job.get('type')=='CRQ'
+    title='Hands off' if hands_off else ('Field work complete — moved to billing preparation' if complete else 'Outage progress update')
     location=', '.join(x for x in [job.get('title',''),job.get('city','')] if x)
     fields=[('Location',location),('Area',job.get('market',''))]
     if job.get('incidentId'):fields.append(('Incident',job['incidentId']))
-    fields.append(('Status',e['status']))
-    note=e.get('note','').strip() or 'Technician reported: '+e['status']+'.'
-    ending='The job has moved to billing preparation. The billing package will follow separately.' if complete else 'Progress will be updated as field reports are saved.'
+    fields.append(('Status','Hands off' if hands_off else e['status']))
+    # Only outage emails include submitted comments. Regular completions are
+    # brief notices; CRQ completions announce hands off without field notes.
+    note=(e.get('note','').strip() or 'Technician reported: '+e['status']+'.') if outage else ''
+    ending='' if hands_off else ('The job has moved to billing preparation. The billing package will follow separately.' if complete else 'Progress will be updated as field reports are saved.')
     actor=e.get('actor',{}).get('name','First Digital technician')
     role='Operations' if e.get('actor',{}).get('role')=='office' else 'Field Technician'
     footer='This automated message was sent by the First Digital field processing app using '+('the saved job update.' if role=='Operations' else 'the technician’s submitted update.')
-    text=title+'\n\n'+'\n'.join(k+': '+v for k,v in fields if v)+'\n\n'+('Completion findings' if complete else 'Technician update')+':\n'+note+'\n\n'+ending+'\n\n'+actor+'\n'+role+' | First Digital LLC\n'+SENDER+'\nSecond to None\n\n'+footer
+    comments=('Completion findings' if complete else 'Technician update')+':\n'+note if outage else ''
+    text='\n\n'.join(part for part in [title,'\n'.join(k+': '+v for k,v in fields if v),comments,ending,actor+'\n'+role+' | First Digital LLC\n'+SENDER+'\nSecond to None',footer] if part)
     esc=html.escape
     body='<h2>'+esc(title)+'</h2>'+''.join('<p><strong>'+esc(k)+':</strong> '+esc(v)+'</p>' for k,v in fields if v)
-    body+='<p><strong>'+('Completion findings' if complete else 'Technician update')+'</strong></p><p>'+esc(note).replace('\n','<br>')+'</p><p>'+esc(ending)+'</p><hr>'
+    if outage:body+='<p><strong>'+('Completion findings' if complete else 'Technician update')+'</strong></p><p>'+esc(note).replace('\n','<br>')+'</p>'
+    if ending:body+='<p>'+esc(ending)+'</p>'
+    body+='<hr>'
     body+='<img src="'+LOGO+'" width="170" alt="First Digital — Second to None"><p><strong>'+esc(actor)+'</strong><br>'+role+' | <strong>First Digital LLC</strong><br>'+SENDER+'</p><p><em>'+esc(footer)+'</em></p>'
     subject=route['subject'] if re.match(r'^\s*re:',route['subject'],re.I) else 'Re: '+route['subject']
     return {'subject':subject,'to':route['to'],'cc':route['cc'],'parent':route['messageId'],
