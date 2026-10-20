@@ -880,7 +880,13 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
 
 def import_graycliff_mailbox() -> dict[str, Any]:
     from operations_intake import run
-    return run(store, db)
+    try:
+        return run(store, db)
+    finally:
+        # Preparation is independent of intake success. This module is disarmed
+        # and cannot send emails while the user-requested pause remains in place.
+        from mail_automation import prepare
+        prepare(store, db)
 
 
 def sync_mobile_field_sheets() -> dict[str, Any]:
