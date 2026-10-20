@@ -5,7 +5,7 @@ after installation enter the outbox. Paused drafts never become sendable merely
 because an environment variable changes. Explicit release is required as well.
 """
 from __future__ import annotations
-import base64, hashlib, hmac, html, json, os, re, sqlite3, threading, time
+import base64, hashlib, hmac, html, json, os, re, sqlite3, threading, time, uuid
 import urllib.parse, urllib.request
 from datetime import datetime, timezone
 from email import policy
@@ -21,6 +21,36 @@ SENDER = 'graycliffjobs@firstdigitalsc.com'
 ROOT = 'https://firstdigitalsc.com/wp-json'
 LOGO = 'https://firstdigitalsc.com/wp-content/uploads/2026/07/cropped-cropped-FirstDigital_Tagline_Clean_Fixed_WhiteBG.jpg'
 GUARD = threading.Lock()
+WAKE = threading.Event()
+WAKE_GUARD = threading.Lock()
+
+def wake(store,db):
+    """Start processing now; coalesce repeated wakes without losing a newer update."""
+    WAKE.set()
+    if not WAKE_GUARD.acquire(blocking=False):return
+    def worker():
+        try:
+            while WAKE.is_set():
+                WAKE.clear();result=prepare(store,db)
+                if result.get('skipped') and os.getenv('RENDER_SERVICE_ID','')==OWNER_SERVICE:
+                    time.sleep(.25);WAKE.set()
+        finally:
+            WAKE_GUARD.release()
+            if WAKE.is_set():wake(store,db)
+    threading.Thread(target=worker,name='graycliff-status-email',daemon=True).start()
+
+def install(app,store,db):
+    from flask import request,jsonify
+    path='/api/portal/process-updates'
+    @app.post(path)
+    def process_updates_now():
+        raw=request.get_data();ts=request.headers.get('X-FDGC-Time','');given=request.headers.get('X-FDGC-Signature','');key=os.getenv('GRAYCLIFF_BRIDGE_SECRET','') or store.token
+        canonical='fdgc-mail-bridge-v1\n'+ts+'\nPOST\n'+path+'\n'+hashlib.sha256(raw).hexdigest()
+        if not ts.isdigit() or abs(time.time()-int(ts))>300 or not hmac.compare_digest(hmac.new(key.encode(),canonical.encode(),hashlib.sha256).hexdigest(),given):return jsonify({'error':'Unauthorized'}),403
+        p=request.get_json(silent=True) or {}
+        if not re.fullmatch(r'[a-f0-9-]{36}',str(p.get('eventId',''))):return jsonify({'error':'Invalid event reference'}),400
+        wake(store,db)
+        return jsonify({'queued':True,'eventId':p['eventId']}),202
 
 class ThreadReview(RuntimeError):
     pass
@@ -43,9 +73,12 @@ def bridge(store, method, path, payload=None, after=None):
     ts=str(int(time.time()));key=os.getenv('GRAYCLIFF_BRIDGE_SECRET','') or store.token
     canonical='fdgc-mail-bridge-v1\n'+ts+'\n'+method+'\n'+path+'\n'+hashlib.sha256(body).hexdigest()
     signature=hmac.new(key.encode(),canonical.encode(),hashlib.sha256).hexdigest()
-    url=ROOT+path+('?' + urllib.parse.urlencode({'after':after}) if after is not None else '')
+    query={'after':after} if after is not None else {}
+    if method=='GET':query['_fdgc']=uuid.uuid4().hex
+    url=ROOT+path+('?' + urllib.parse.urlencode(query) if query else '')
     req=urllib.request.Request(url,data=body if method=='POST' else None,method=method,
         headers={'Content-Type':'application/json','X-FDGC-Time':ts,'X-FDGC-Signature':signature,
+                 'Cache-Control':'no-store, max-age=0','Pragma':'no-cache',
                  'User-Agent':'FirstDigitalGraycliffMailPreparation/1.0'})
     with urllib.request.urlopen(req,timeout=35) as response:
         return json.loads(response.read())
@@ -262,7 +295,7 @@ def prepare(store,db):
         initialize(db)
         with db() as c:
             row=c.execute("SELECT value FROM mail_bridge_meta WHERE key='cursor'").fetchone();cursor=int(row[0]) if row else 0
-        response=bridge(store,'GET','/fdgc/v1/events',after=cursor)
+        response=bridge(store,'POST','/fdgc/v1/events',payload={'after':cursor})
         if 'maxSeq' in response and int(response['maxSeq'])<cursor:
             raise RuntimeError('Portal history was restored or rewound. Reconcile the email cursor before processing updates.')
         for e in response.get('events',[]):
@@ -285,12 +318,13 @@ def prepare(store,db):
                 # Future activation applies only to new events after an explicit
                 # activation timestamp. Existing PAUSED drafts never auto-release.
                 ready=bool(live_after and after_activation(e['at'],live_after))
-                with db() as c:c.execute("UPDATE mail_event_outbox SET state=?,draft=?,prepared_at=?,approved_at=?,detail=? WHERE event_id=?",
+                with db() as c:changed=c.execute("UPDATE mail_event_outbox SET state=?,draft=?,prepared_at=?,approved_at=?,detail=? WHERE event_id=? AND state IN ('NEW','NEEDS_ATTENTION')",
                     ('READY' if ready else 'PAUSED',json.dumps(draft),now(),now() if ready else None,
-                     'New event allowed by explicitly enabled policy.' if ready else 'Prepared only. Sending is disarmed.',e['eventId']))
+                     'New event allowed by explicitly enabled policy.' if ready else 'Prepared only. Sending is disarmed.',e['eventId'])).rowcount
+                if not changed:continue
                 if ready:dispatch(db,e['eventId'],store)
             except ThreadReview as ex:
-                with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_THREAD_REVIEW',detail=? WHERE event_id=?",(str(ex),e['eventId']))
+                with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_THREAD_REVIEW',detail=? WHERE event_id=? AND state NOT IN ('ACCEPTED','DISPATCHING','UNCERTAIN','SUPERSEDED')",(str(ex),e['eventId']))
             except Exception:
                 with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_ATTENTION',prepared_at=?,detail='Preparation needs attention; no automatic retry of uncertain sends.' WHERE event_id=? AND state NOT IN ('UNCERTAIN','DISPATCHING','ACCEPTED')",(now(),e['eventId']))
         result=report(db)

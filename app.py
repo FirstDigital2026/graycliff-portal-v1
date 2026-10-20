@@ -880,13 +880,12 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
 
 def import_graycliff_mailbox() -> dict[str, Any]:
     from operations_intake import run
-    try:
-        return run(store, db)
-    finally:
-        # Preparation is independent of intake success. This module is disarmed
-        # and cannot send emails while the user-requested pause remains in place.
-        from mail_automation import prepare
-        prepare(store, db)
+    return run(store, db)
+
+
+def process_graycliff_status_updates() -> dict[str, Any]:
+    from mail_automation import prepare
+    return prepare(store,db)
 
 
 def sync_mobile_field_sheets() -> dict[str, Any]:
@@ -1246,6 +1245,11 @@ def start_scheduler() -> None:
         id="graycliff_mailbox_import",
         max_instances=1,
         coalesce=True,
+    )
+    scheduler.add_job(
+        process_graycliff_status_updates,
+        'interval', seconds=30, id='graycliff_status_email_backup',
+        max_instances=1, coalesce=True,
     )
     scheduler.start()
 
@@ -2308,6 +2312,8 @@ from billing_mail import install as install_portal_billing
 install_portal_billing(app, store, db)
 from field_documents import install as install_portal_field_documents
 install_portal_field_documents(app, store)
+from mail_automation import install as install_status_mail
+install_status_mail(app,store,db)
 
 if __name__ == "__main__":
     app.run(debug=True)
