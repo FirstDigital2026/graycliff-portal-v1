@@ -181,7 +181,8 @@ def sync_row(store,sid,rid,force=False):
         for a in store.list_row_attachments(sid,rid):
             if a['name'].startswith('Field-') and str(a['id']) not in policy_map:policy_map[str(a['id'])]={'mode':'field','reason':'Nonfinancial technical PDF extracted from source package'}
     facts={k:safe_text(v) for k,v in facts.items() if k in FACT_KEYS and v and not FINANCIAL.search(str(v))}
-    update={FACTS_COLUMN:json.dumps(facts,separators=(',',':')),FILES_COLUMN:json.dumps(policy_map,separators=(',',':')),REVIEW_COLUMN:''}
+    compact_policy={aid:{'mode':entry['mode']} for aid,entry in policy_map.items()}
+    update={FACTS_COLUMN:json.dumps(facts,separators=(',',':')),FILES_COLUMN:json.dumps(compact_policy,separators=(',',':')),REVIEW_COLUMN:''}
     # Smartsheet TEXT_NUMBER cells allow 4,000 characters. No policy is truncated.
     if any(len(v)>3900 for v in update.values()):raise ValueError('Field-document metadata needs office review; no partial policy was saved.')
     store.update_row(sid,rid,update)

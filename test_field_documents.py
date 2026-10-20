@@ -1,4 +1,4 @@
-import unittest,io
+import unittest,io,json
 import subprocess
 from unittest.mock import patch
 import field_documents as f
@@ -17,6 +17,15 @@ Comments: NTP for push light
 '''
 
 class FieldDocumentTests(unittest.TestCase):
+    def test_large_photo_job_fits_sheet_metadata_without_losing_files(self):
+        class Store:
+            saved=None
+            def get_sheet(self,*args,**kwargs):return {'columns':[{'id':i+1,'title':n} for i,n in enumerate((f.FACTS_COLUMN,f.FILES_COLUMN,f.REVIEW_COLUMN,'Task Name'))],'rows':[{'id':5,'cells':[{'columnId':4,'value':'Synthetic photo job'}]}]}
+            def list_row_attachments(self,*args):return [{'id':1000000000000000+i,'name':'field-photo-'+str(i)+'.jpg'} for i in range(100)]
+            def update_row(self,sid,rid,values):self.saved=values
+        store=Store();result=f.sync_row(store,1,5)
+        self.assertEqual(result['files'],100);self.assertLess(len(store.saved[f.FILES_COLUMN]),3900);self.assertEqual(len(json.loads(store.saved[f.FILES_COLUMN])),100)
+        self.assertNotIn('Status',store.saved)
     def test_pdf_worker_limits_and_timeout_fail_closed(self):
         with patch.object(f.subprocess,'run') as run:
             self.assertEqual(f.pdf_text(b'x'*(8*1024*1024+1)),'');run.assert_not_called()
