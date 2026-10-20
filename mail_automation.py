@@ -124,7 +124,7 @@ def draft_event(e,route):
     job=e.get('job',{});complete=e['status']=='Field complete'
     outage=job.get('type')=='Outage'
     hands_off=complete and job.get('type')=='CRQ'
-    title='Hands off' if hands_off else ('Field work complete — moved to billing preparation' if complete else 'Outage progress update')
+    title='Hands off — job complete' if hands_off else ('Field work complete — moved to billing preparation' if complete else 'Outage progress update')
     location=', '.join(x for x in [job.get('title',''),job.get('city','')] if x)
     fields=[('Location',location),('Area',job.get('market',''))]
     if job.get('incidentId'):fields.append(('Incident',job['incidentId']))
