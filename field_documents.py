@@ -44,6 +44,12 @@ def ntp_facts(text, expected_work_order=''):
                     first=body[0];parts=[first[positions[n]:positions[n+1] if n<3 else None].strip() for n in range(4)]
                     for key,value in zip(('jobName','address','siteContact','sitePhone'),parts):
                         if value:out[key]=safe_text(value)[:250]
+                    # PDF layout text can shift a phone left of its column header.
+                    phone=re.search(r'(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]\d{3}[ .-]\d{4}(?:\s*(?:ext\.?|x)\s*\d+)?',first[positions[2]:],re.I)
+                    if phone:
+                        start=positions[2]+phone.start();out['sitePhone']=phone.group().strip()
+                        out['siteContact']=safe_text(first[positions[2]:start])[:250]
+                    else:out.pop('sitePhone',None)
                     for l in body[1:]:
                         city=l[positions[1]:positions[2]].strip()
                         if re.search(r'\b[A-Z]{2}\s+\d{5}(?:-\d{4})?\b',city,re.I):out['cityStateZip']=safe_text(city);break

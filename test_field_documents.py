@@ -31,6 +31,11 @@ class FieldDocumentTests(unittest.TestCase):
         with patch.object(f.graph,'_pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'review')
         self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'review')
         self.assertEqual(f.classify('field-photo.jpg',b'photo',False)[0],'field')
+    def test_phone_shifted_left_of_column_heading(self):
+        text=SAMPLE.replace('EXAMPLE,CONTACT           (555) 555-0100','EXAMPLE,CONTACT (555) 555-0100')
+        facts=f.ntp_facts(text)
+        self.assertEqual(facts['sitePhone'],'(555) 555-0100')
+        self.assertEqual(facts['siteContact'],'EXAMPLE,CONTACT')
     def test_technical_pdf_kept_and_email_download_not_released(self):
         with patch.object(f.graph,'_pdf_text',return_value='Splice matrix for location FT18. Fiber connections and port assignments.'):self.assertEqual(f.classify('splice-matrix.pdf',b'%PDF-test')[0],'field')
         raw=b'Subject: Outage dispatch\r\nContent-Type: text/plain\r\n\r\nPlease respond to the outage at the job location.'
