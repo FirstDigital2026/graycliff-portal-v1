@@ -152,6 +152,24 @@ def draft_event(e,route):
             'references':list(dict.fromkeys(route.get('references',[])+[route['messageId']]))[-30:],
             'text':text,'html':body,'eventId':e['eventId'],'title':job.get('title',''),'jobKey':e['jobKey']}
 
+def attach_update_photos(draft,event,store):
+    photos=event.get('photos') or []
+    if not photos:return draft
+    if event.get('job',{}).get('type')!='Outage' or len(photos)>1:raise ThreadReview('Unexpected outage photo selection. Office review required.')
+    allowed={str(a['id']):a for a in store.list_row_attachments(int(event['sheetId']),int(event['rowId']))}
+    result={**draft,'inlinePhotos':[]};images=[]
+    for ref in photos:
+        aid=str(ref.get('id',''));sid=str(ref.get('sheetId',''));a=allowed.get(aid)
+        if not aid.isdigit() or sid!=str(event['sheetId']) or not a or a.get('name')!=ref.get('name') or not re.fullmatch(r'Outage-update-[a-f0-9]{24}\.jpg',ref.get('name','')):raise ThreadReview('The update photo could not be verified on this job. No email sent.')
+        raw,_,_=store.download_attachment(int(sid),int(aid))
+        if not raw or len(raw)>1024*1024 or not raw.startswith(b'\xff\xd8') or hashlib.sha256(raw).hexdigest()!=ref.get('sha256'):raise ThreadReview('The saved update photo changed or is unavailable. No email sent.')
+        cid='outage-'+event['eventId']+'-'+aid+'@firstdigitalsc.com'
+        result['inlinePhotos'].append({'cid':cid,'name':'Outage-update-photo.jpg','content':base64.b64encode(raw).decode('ascii')})
+        images.append('<p><strong>Outage update photo</strong><br><img src="cid:'+html.escape(cid)+'" alt="Outage update photo" width="640" style="width:100%;max-width:640px;height:auto"></p>')
+    result['html']=result['html'].replace('<hr>',''.join(images)+'<hr>',1)
+    result['text']+='\n\nOutage update photo included with this message.'
+    return result
+
 def mime_message(draft):
     m=EmailMessage(policy=policy.SMTP);m['From']='First Digital <'+SENDER+'>';m['To']=', '.join(draft['to'])
     if draft['cc']:m['Cc']=', '.join(draft['cc'])
@@ -160,6 +178,8 @@ def mime_message(draft):
     m['In-Reply-To']=draft['parent'];m['References']=' '.join(draft['references'])
     m['Auto-Submitted']='auto-generated';m['X-Auto-Response-Suppress']='All';m['X-FirstDigital-Event']=draft['eventId']
     m.set_content(draft['text']);m.add_alternative(draft['html'],subtype='html')
+    for photo in draft.get('inlinePhotos',[]):
+        m.get_payload()[-1].add_related(base64.b64decode(photo['content'],validate=True),maintype='image',subtype='jpeg',cid='<'+photo['cid']+'>',filename=photo['name'],disposition='inline')
     return m.as_bytes()
 
 def after_activation(event_time,activation_time):
@@ -186,12 +206,13 @@ def dispatch(db,event_id,store=None):
         if fresh is None or values.get('Status')!=expected or values.get('Portal Billing Status')=='Submitted':
             c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Job moved, changed status, or billing was submitted. Stale email held.' WHERE event_id=?",(event_id,))
             return
+        draft=json.loads(row['draft']);transport=base64.b64encode(mime_message(draft))
+        if len(transport)>3900000:raise ThreadReview('The update email is too large. Office review required; no email sent.')
         changed=c.execute("UPDATE mail_event_outbox SET state='DISPATCHING' WHERE event_id=? AND state='READY'",(event_id,)).rowcount
         if changed!=1:raise RuntimeError('Email is already being processed.')
-        draft=json.loads(row['draft'])
     try:
         graph._request('POST',graph.GRAPH_ROOT+'/users/'+urllib.parse.quote(SENDER,safe='')+'/sendMail',
-            token=graph.access_token(),body=base64.b64encode(mime_message(draft)),headers={'Content-Type':'text/plain'})
+            token=graph.access_token(),body=transport,headers={'Content-Type':'text/plain'})
     except Exception:
         with db() as c:c.execute("UPDATE mail_event_outbox SET state='UNCERTAIN',detail='Provider outcome uncertain. Check Sent Items before any manual retry.' WHERE event_id=?",(event_id,))
         raise
@@ -257,7 +278,7 @@ def prepare(store,db):
         for row in pending:
             e=json.loads(row['payload'])
             try:
-                token=token or graph.access_token();route=resolve_thread(store,token,e);draft=draft_event(e,route)
+                token=token or graph.access_token();route=resolve_thread(store,token,e);draft=attach_update_photos(draft_event(e,route),e,store)
                 # Future activation applies only to new events after an explicit
                 # activation timestamp. Existing PAUSED drafts never auto-release.
                 ready=bool(live_after and after_activation(e['at'],live_after))
