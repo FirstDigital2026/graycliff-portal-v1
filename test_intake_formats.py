@@ -8,6 +8,12 @@ class EmptyStore:
     def get_sheet(self,*args,**kwargs):return {'columns':[],'rows':[]}
 
 class IntakeFormatTests(unittest.TestCase):
+    def test_johnston_no_light_with_comma_separated_subject(self):
+        m={'subject':'Re: [EXTERNAL] Fw: No Light 7A999E 901 Fictional St, Johnston, SC 29832 LHWO 89999999','from':{'emailAddress':{'address':'dispatcher@firstdigitalsc.com'}},'body':{'content':'From: Dispatch <dispatch@graycliffent.com>\nSpectrum requests a splicer ASAP.\n901 Fictional St, Johnston, SC 29832'}}
+        with patch.object(graph,'_candidate_document_texts',return_value=[]):result=intake.message_item(EmptyStore(),m,[])
+        self.assertEqual((result['address'],result['city'],result['market'],result['type']),('901 Fictional St','Johnston','Columbia','Outage'))
+        self.assertTrue(formats.trusted_no_light(m,'From: Dispatch <dispatch@graycliffent.com>'))
+
     def test_push_light_reads_ntp_before_rejecting_subject(self):
         m={'subject':'Fw: [EXTERNAL] Push Light-901 Fictional Ave N-7A999E','body':{'content':'Spectrum dispatch'}}
         ntp=graph.ParsedNtp('3999991','7999991',m['subject'],address='901 Fictional Hwy N',city='Jackson',due_date='2026-10-27')

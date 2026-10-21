@@ -566,7 +566,7 @@ def run(store, db):
                 audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
                 phase='reading documents'
                 # Graph's hasAttachments flag is false for messages containing only inline pictures.
-                attachments = graph.list_attachments(token,message['id'])
+                attachments = graph.list_attachments(token,message['id'],inline_content=False)
                 attachments = formats.enrich_push_parent(token,message,attachments)
                 item = message_item(store,message,attachments)
                 phase='saving job and source files'

@@ -1,5 +1,5 @@
 """Signed portal workflow for held assignment emails. Originals are never deleted."""
-import hashlib, hmac, json, os, re, time, urllib.parse
+import hashlib, hmac, json, os, re, sqlite3, time, urllib.parse
 from datetime import date
 import graph_import as graph
 import operations_intake as intake
@@ -62,16 +62,47 @@ def handle(store, db, payload):
         raise ValueError('Email intake record not found.')
     if row.get('State') == 'Imported':
         return {'jobKey':row.get('Job Key',''),'message':'This email has already been imported.'}
+    if row.get('State') == 'Dismissed':
+        return {'message':'This email was marked no job needed. Its original is retained.'}
     if row.get('State') not in STATES:
         raise ValueError('This record is not awaiting intake review.')
+    action = payload.get('action')
+    if action not in ('detail', 'resolve', 'dismiss'):
+        raise ValueError('Unknown review action.')
+    if action == 'dismiss':
+        reason = str(payload.get('reason', '')).strip()
+        if not reason or len(reason) > 1000:
+            raise ValueError('Enter why no job is needed, up to 1,000 characters.')
+        with db() as c:
+            c.execute('CREATE TABLE IF NOT EXISTS portal_intake_review (message_key TEXT PRIMARY KEY, actor TEXT, started REAL, job_key TEXT)')
+            if c.execute('SELECT 1 FROM portal_intake_review WHERE message_key=?', (key,)).fetchone():
+                raise ValueError('A review save has already started for this email. Check its job before marking it no job needed.')
     token = graph.access_token()
     message = find_message(token,key)
+    if action == 'dismiss':
+        destination = graph.ensure_mail_folder(token, 'Reviewed - No job')
+        with db() as c:
+            try:
+                c.execute('INSERT INTO portal_intake_review VALUES (?,?,?,?)', (key, payload['actor'], time.time(), 'DISMISSED'))
+            except sqlite3.IntegrityError:
+                raise ValueError('Another review action is already recorded. Refresh before continuing.')
+        detail = 'No job needed. Reviewed by '+str(payload['actor'])[:200]+'. Reason: '+reason+' Original email and files retained.'
+        intake.audit(store, sid, key, State='Dismissed', Detail=detail)
+        with db() as c:
+            c.execute('CREATE TABLE IF NOT EXISTS operations_mail (message_key TEXT PRIMARY KEY, job_key TEXT, state TEXT)')
+            c.execute('INSERT OR REPLACE INTO operations_mail VALUES (?,?,?)', (key, '', 'Dismissed'))
+        warning = ''
+        try:
+            graph.move_message(token, message['id'], destination)
+        except Exception:
+            warning = ' The original remains in Manual Review in Outlook; its archive move needs attention.'
+        return {'message':'Marked no job needed. No job was created; original email and files retained.'+warning}
     if payload.get('action') == 'detail':
         # Raw source is office-only; leads receive the subject, reason and operational form.
         result = {'subject':message.get('subject',''),'received':message.get('receivedDateTime',''),'reason':row.get('Detail','')}
         if payload['role']=='office':
             result['body'] = graph._plain_text(message.get('body',{}).get('content',''))[:24000]
-            result['files'] = [a.get('name','File') for a in graph.list_attachments(token,message['id'])]
+            result['files'] = [a.get('name','File') for a in graph.list_attachment_metadata(token,message['id'])]
         return result
     if payload.get('action') != 'resolve':
         raise ValueError('Unknown review action.')
@@ -94,7 +125,7 @@ def handle(store, db, payload):
             raise ValueError('A review save is already recorded or awaiting confirmation. Refresh the queue and check the linked job before retrying.')
         c.execute('INSERT INTO portal_intake_review VALUES (?,?,?,?)',(key,payload['actor'],time.time(),''))
     # Keep the durable claim after uncertain network errors; never automatically repeat a partial import.
-    files = graph.list_attachments(token,message['id'])
+    files = graph.list_attachments(token,message['id'],inline_content=False)
     stats = dict(created=0,updated=0,failed=0,ignored=0,replies=0)
     jobkey = intake.save_message(store,token,message,item,files,key,stats,db=db)
     if expected and jobkey != expected:

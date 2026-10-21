@@ -6,7 +6,7 @@ import graph_import as graph
 PUSH = re.compile(r'\bpush[ -]+light\b',re.I)
 NODE = re.compile(r'\b\d[A-Z]\d{1,3}E\b',re.I)
 STREET = r"\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#'\-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY|BLVD|BOULEVARD|CIR|CIRCLE|WAY|PKWY|PARKWAY))(?:\s+(?:EXT|EXTENSION))?(?:\s+(?:N|S|E|W|NE|NW|SE|SW))?"
-EXTRA_CITIES = {'mcbee':'Florence','cheraw':'Florence','lynchburg':'Florence','aiken':'Columbia','jackson':'Columbia','barnwell':'Columbia','orangeburg':'Columbia','blair':'Columbia','summerton':'Columbia','edgefield':'Columbia'}
+EXTRA_CITIES = {'mcbee':'Florence','cheraw':'Florence','lynchburg':'Florence','aiken':'Columbia','jackson':'Columbia','barnwell':'Columbia','orangeburg':'Columbia','blair':'Columbia','summerton':'Columbia','edgefield':'Columbia','johnston':'Columbia'}
 
 def newer_source(incoming, previous):
     if not previous:return True
@@ -46,7 +46,7 @@ def appointment(body):
 def trusted_no_light(message, body):
     subject=str(message.get('subject',''))
     if not re.search(r'\b(?:no|low)[ -]+light\b',subject,re.I) or not NODE.search(subject):return False
-    if not re.search(r'\b'+STREET+r'\s+[^\r\n]{0,40}\bSC\b',subject,re.I):return False
+    if not re.search(r'\b'+STREET+r'[,\s]+[^\r\n]{0,40}\bSC\b',subject,re.I):return False
     sender=message.get('from',{}).get('emailAddress',{}).get('address','').lower()
     if sender.endswith('@graycliffent.com'):return True
     return sender.endswith('@firstdigitalsc.com') and bool(re.search(r'(?im)^\s*From:\s*[^\r\n]*@graycliffent\.com\b',body))

@@ -9,6 +9,64 @@ with patch.dict(sys.modules, {'graph_import':types.ModuleType('graph_import'),'o
     spec.loader.exec_module(review)
 
 class ReviewTests(unittest.TestCase):
+    def test_dismiss_retains_original_and_never_saves_job(self):
+        key='d'*64; conn=sqlite3.connect(':memory:');conn.row_factory=sqlite3.Row
+        @contextmanager
+        def db():
+            with conn:yield conn
+        store=Mock();audit=Mock();save=Mock();move=Mock()
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(review,'records',return_value=(1,[{'Message Key':key,'State':'Needs review'}])))
+            stack.enter_context(patch.object(review,'find_message',return_value={'id':'fictional','subject':'Informational email'}))
+            for obj,name,value in [(review.graph,'access_token',lambda:'fake'),(review.graph,'ensure_mail_folder',lambda *a:'archive'),(review.graph,'move_message',move),(review.intake,'audit',audit),(review.intake,'save_message',save)]:
+                stack.enter_context(patch.object(obj,name,value,create=True))
+            result=review.handle(store,db,{'role':'lead','actor':'lead@example.test','messageKey':key,'action':'dismiss','reason':'Informational only'})
+            save.assert_not_called();store.list_row_attachments.assert_not_called()
+            self.assertEqual(audit.call_args.kwargs['State'],'Dismissed')
+            self.assertIn('lead@example.test',audit.call_args.kwargs['Detail']);self.assertIn('Informational only',audit.call_args.kwargs['Detail'])
+            move.assert_called_once_with('fake','fictional','archive')
+            self.assertEqual(conn.execute('SELECT state FROM operations_mail').fetchone()[0],'Dismissed')
+            self.assertIn('No job was created',result['message'])
+        conn.close()
+
+    def test_dismiss_requires_reason_before_mail_access(self):
+        key='d'*64
+        with patch.object(review,'records',return_value=(1,[{'Message Key':key,'State':'Needs review'}])),patch.object(review,'find_message') as source:
+            with self.assertRaisesRegex(ValueError,'why no job'):
+                review.handle(Mock(),Mock(),{'role':'office','actor':'office@example.test','messageKey':key,'action':'dismiss','reason':''})
+            source.assert_not_called()
+
+    def test_dismiss_cannot_hide_a_partially_started_job_save(self):
+        key='d'*64; conn=sqlite3.connect(':memory:');conn.row_factory=sqlite3.Row
+        conn.execute('CREATE TABLE portal_intake_review (message_key TEXT PRIMARY KEY, actor TEXT, started REAL, job_key TEXT)')
+        conn.execute('INSERT INTO portal_intake_review VALUES (?,?,?,?)',(key,'fictional',time.time(),''))
+        @contextmanager
+        def db():
+            with conn:yield conn
+        with patch.object(review,'records',return_value=(1,[{'Message Key':key,'State':'Needs review'}])),patch.object(review,'find_message') as source:
+            with self.assertRaisesRegex(ValueError,'already started'):
+                review.handle(Mock(),db,{'role':'office','actor':'office@example.test','messageKey':key,'action':'dismiss','reason':'Informational'})
+            source.assert_not_called()
+        conn.close()
+
+    def test_dismissed_record_is_idempotent(self):
+        key='d'*64
+        with patch.object(review,'records',return_value=(1,[{'Message Key':key,'State':'Dismissed'}])),patch.object(review,'find_message') as source:
+            self.assertIn('original is retained',review.handle(Mock(),Mock(),{'role':'office','actor':'office@example.test','messageKey':key,'action':'dismiss'})['message'])
+            source.assert_not_called()
+
+    def test_office_detail_reads_names_without_photo_payloads(self):
+        key='d'*64
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(review,'records',return_value=(1,[{'Message Key':key,'State':'Needs review'}])))
+            stack.enter_context(patch.object(review,'find_message',return_value={'id':'fictional','subject':'Dispatch','body':{'content':'Details'}}))
+            stack.enter_context(patch.object(review.graph,'access_token',return_value='fake',create=True))
+            stack.enter_context(patch.object(review.graph,'_plain_text',side_effect=lambda x:x,create=True))
+            names=stack.enter_context(patch.object(review.graph,'list_attachment_metadata',return_value=[{'name':'photo.jpg','size':3000000}],create=True))
+            binary=stack.enter_context(patch.object(review.graph,'list_attachments',create=True))
+            result=review.handle(Mock(),Mock(),{'role':'office','actor':'office@example.test','messageKey':key,'action':'detail'})
+            self.assertEqual(result['files'],['photo.jpg']);names.assert_called_once();binary.assert_not_called()
+
     def test_signed_route_is_path_bound(self):
         raw=b'{"action":"detail"}';stamp=str(int(time.time()));secret='fictional-secret'
         text='fdgc-mail-bridge-v1\n'+stamp+'\nPOST\n'+review.PATH+'\n'+hashlib.sha256(raw).hexdigest()
@@ -70,7 +128,7 @@ class ReviewTests(unittest.TestCase):
             stack.enter_context(patch.object(review,'records',return_value=(1,[{'Message Key':key,'State':'Needs review'}])))
             stack.enter_context(patch.object(review,'find_message',return_value={'id':'fake','subject':'Dispatch'}))
             stack.enter_context(patch.object(review,'reviewed_item',return_value={'type':'Outage'}))
-            for obj,name,val in [(review.graph,'access_token',lambda:'fake'),(review.intake,'thread_match',lambda *a:None),(review.intake,'locate',lambda *a:None),(review.graph,'list_attachments',lambda *a:[{'name':'site-photo.jpg'}]),(review.intake,'save_message',save),(review.intake,'audit',lambda *a,**kw:events.append('ledger')),(review.graph,'ensure_mail_folder',lambda *a:'Imported'),(review.graph,'move_message',lambda *a:events.append('move'))]:
+            for obj,name,val in [(review.graph,'access_token',lambda:'fake'),(review.intake,'thread_match',lambda *a:None),(review.intake,'locate',lambda *a:None),(review.graph,'list_attachments',lambda *a,**kw:[{'name':'site-photo.jpg'}]),(review.intake,'save_message',save),(review.intake,'audit',lambda *a,**kw:events.append('ledger')),(review.graph,'ensure_mail_folder',lambda *a:'Imported'),(review.graph,'move_message',lambda *a:events.append('move'))]:
                 stack.enter_context(patch.object(obj,name,val,create=True))
             stack.enter_context(patch.object(review.intake,'AREA',{'Florence':1},create=True))
             payload={'role':'office','actor':'test@example.invalid','messageKey':key,'action':'resolve'}
@@ -86,4 +144,5 @@ class ReviewTests(unittest.TestCase):
         conn.close()
 
 if __name__=='__main__':unittest.main()
+
 

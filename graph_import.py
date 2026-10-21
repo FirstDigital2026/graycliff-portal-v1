@@ -155,7 +155,36 @@ def get_message_details(token: str, message_id: str) -> dict[str, Any]:
     return result if isinstance(result, dict) else {}
 
 
-def list_attachments(token: str, message_id: str) -> list[dict[str, Any]]:
+def list_attachment_metadata(token: str, message_id: str) -> list[dict[str, Any]]:
+    """List names and sizes without downloading inline-photo payloads."""
+    user = urllib.parse.quote(mailbox())
+    mid = urllib.parse.quote(message_id, safe="")
+    root = f"{GRAPH_ROOT}/users/{user}/messages/{mid}/attachments"
+    url = root+'?$top=100&$select=id,name,size,isInline,contentType'
+    items = []
+    while url:
+        if not url.startswith(root+'?'):
+            raise GraphImportError('Unexpected attachment metadata pagination URL.')
+        result = _request('GET', url, token=token)
+        if not isinstance(result, dict):
+            raise GraphImportError('Attachment metadata listing was not confirmed.')
+        items.extend(result.get('value', []))
+        url = result.get('@odata.nextLink', '')
+    return items
+
+
+def list_attachments(token: str, message_id: str, *, inline_content: bool = True) -> list[dict[str, Any]]:
+    if not inline_content:
+        # Inline pictures are extracted from the retained MIME source during
+        # intake. Avoid keeping another full base64 image set in memory as well.
+        items = list_attachment_metadata(token, message_id)
+        user = urllib.parse.quote(mailbox()); mid = urllib.parse.quote(message_id, safe='')
+        for index, item in enumerate(items):
+            if item.get('isInline') and str(item.get('contentType', '')).lower().startswith('image/'):
+                continue
+            aid = urllib.parse.quote(str(item['id']), safe='')
+            items[index] = _request('GET', f'{GRAPH_ROOT}/users/{user}/messages/{mid}/attachments/{aid}', token=token)
+        return items
     user = urllib.parse.quote(mailbox())
     mid = urllib.parse.quote(message_id, safe="")
     url=f"{GRAPH_ROOT}/users/{user}/messages/{mid}/attachments?$top=100"
@@ -243,6 +272,8 @@ def _pdf_text(data: bytes) -> str:
 def _candidate_document_texts(attachments: list[dict[str, Any]]) -> list[tuple[str, str]]:
     docs: list[tuple[str, str]] = []
     for item in attachments:
+        if str(item.get('contentType', '')).lower().startswith('image/'):
+            continue
         decoded = attachment_bytes(item)
         if not decoded:
             continue
