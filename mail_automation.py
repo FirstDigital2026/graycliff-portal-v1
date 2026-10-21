@@ -14,6 +14,7 @@ from email.parser import BytesParser
 from email.utils import getaddresses, formatdate
 from pathlib import Path
 import graph_import as graph
+import completion_photos
 
 SEND_ARMED = True  # User approved activation; the database policy is also required.
 OWNER_SERVICE = 'srv-d9p0jflbedkc73ds5tn0'
@@ -223,6 +224,8 @@ def mime_message(draft):
     m.set_content(draft['text']);m.add_alternative(body,subtype='html')
     for photo in photos:
         m.get_payload()[-1].add_related(base64.b64decode(photo['content'],validate=True),maintype='image',subtype='jpeg',cid='<'+photo['cid']+'>',filename=photo['name'],disposition='inline')
+    for attachment in draft.get('attachments',[]):
+        m.add_attachment(base64.b64decode(attachment['content'],validate=True),maintype='image',subtype='jpeg',filename=attachment['name'])
     return m.as_bytes()
 
 def after_activation(event_time,activation_time):
@@ -330,7 +333,8 @@ def prepare(store,db):
         for row in pending:
             e=json.loads(row['payload'])
             try:
-                token=token or graph.access_token();route=resolve_thread(store,token,e);draft=attach_update_photos(draft_event(e,route),e,store)
+                token=token or graph.access_token();route=resolve_thread(store,token,e);draft=draft_event(e,route)
+                draft=completion_photos.attach(draft,e,store,bridge,ThreadReview) if e.get('status')=='Field complete' else attach_update_photos(draft,e,store)
                 # Future activation applies only to new events after an explicit
                 # activation timestamp. Existing PAUSED drafts never auto-release.
                 ready=bool(live_after and after_activation(e['at'],live_after))
