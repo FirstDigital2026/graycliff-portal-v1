@@ -28,5 +28,7 @@ class ProjectIntakeTests(unittest.TestCase):
                 return {'columns':[{'id':1,'title':'Task Name'},{'id':2,'title':'Portal Job Type'}],'rows':[{'id':7,'cells':[{'columnId':1,'value':'Example subdivision expansion'},{'columnId':2,'value':'Project'}]}]} if sid==o.AREA['Florence'] else {'columns':[],'rows':[]}
         found=o.locate(Store(),{'pid':'','wo':'','address':'Example subdivision expansion','city':'','type':'Project'})
         self.assertEqual(found[2]['id'],7)
+        reply=o.locate(Store(),{'pid':'','wo':'','address':'Example subdivision expansion','city':'','type':'Standard'},linked=found)
+        self.assertEqual(reply[2]['id'],7)
 
 if __name__=='__main__':unittest.main()

@@ -203,7 +203,7 @@ def normalized_address(text):
         text = re.sub(r'\b'+long+r'\b',short,text)
     return re.sub(r'[^a-z0-9]','',text)
 
-def locate(store, item):
+def locate(store, item, linked=None):
     found = []
     for market,sid in SEARCH_SHEETS.items():
         sheet = store.get_sheet(sid,force=True)
@@ -226,9 +226,10 @@ def locate(store, item):
                 raise ValueError('This street address already exists with a different city. Review before creating a job.')
             match_address = address_exists and city_matches
             existing_type = str(v.get('Portal Job Type') or ('CRQ' if re.search(r'\bCRQ',title+' '+str(v.get('Notes','')),re.I) else 'Standard'))
-            if match_address and (item.get('type')=='Project')!=(existing_type=='Project') and not match_pid and not match_wo:
+            same_thread=bool(linked and linked[1]==sid and linked[2]['id']==row['id'])
+            if not same_thread and match_address and (item.get('type')=='Project')!=(existing_type=='Project') and not match_pid and not match_wo:
                 raise ValueError('A project at this location is separate from an existing non-project job. Office review required.')
-            if match_address and item.get('type')=='Outage' and existing_type!='Outage' and not match_pid and not match_wo:
+            if not same_thread and match_address and item.get('type')=='Outage' and existing_type!='Outage' and not match_pid and not match_wo:
                 raise ValueError('An outage at this address may be a separate event from the existing regular/CRQ job. Office review required before attaching or creating.')
             if match_address and item['pid'] and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:
                 raise ValueError('This address already has a different project ID. Office review required.')
@@ -289,7 +290,7 @@ def message_item(store, message, attachments):
 
 def save_message(store, token, message, item, attachments, key, state):
     linked = thread_match(store,message)
-    found = locate(store,item)
+    found = locate(store,item,linked)
     if linked:
         if found and (found[1],found[2]['id'])!=(linked[1],linked[2]['id']):
             raise ValueError('Reply identifiers conflict with the job linked to this chain. Office review required.')
