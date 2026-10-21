@@ -261,6 +261,8 @@ def handle(store, db, payload):
     return {'id':r['id'],'state':'ACCEPTED','sentAt':at,'message':'Accepted by Microsoft. Delivery is not confirmed.'}
 
 def install(app, store, db):
+    from intake_review import install as install_intake_review
+    install_intake_review(app, store, db)
     from flask import request, jsonify
     @app.post(PATH)
     def portal_billing_package():
