@@ -374,7 +374,7 @@ def save_message(store, token, message, item, attachments, key, state):
 # generic imageNNN names, inline/CID disposition, dimensions or image file size.
 # The untouched original email remains attached as the source record.
 SIGNATURE_IMAGE_HASHES = {'0990d3f2302c522ed27042d372c114b73ce1f020c47cb4ac8a666e62f96d01d8', '165b6b300b32d80821729c32d3e14d831299ab1f573e61bde6ae6c7a8565acdf', '5ed189834a6c314bfd535d0a4549c2be4b0af40f5fa68203398434b3ddaa2630', '9976e00c16c669dc59a30d2687d6c0349c47e251150d13372583276b172cfcbe', '07191215e8e21acfa604ca800c479bff88ba2a53c5e8c5b3f8bb22b11e975490', 'd71b446a7542d7ee4134ef1296fc119ab9bccf021f9f777d9e4a7f6ca424f707', '9e577e39b49b66457ecbdc2bbec1479b3d6267fd55bda21337aa7027251fab60'}
-SIGNATURE_IMAGE_HASHES.update({'104b981f00ae0305dcb847fa096033e175fe5e71bb9e4175d68a4f414164db42', '104b91fbfbc89b3c41c3246a653763164bdbdf01be58a40155ad994ece4c33e6'})
+SIGNATURE_IMAGE_HASHES.update({'cb0628092ddea96bb040221b5c793dbbb792a67d0621bdfba170c07374d85801', '104b981f00ae0305dcb847fa096033e175fe5e71bb9e4175d68a4f414164db42', '104b91fbfbc89b3c41c3246a653763164bdbdf01be58a40155ad994ece4c33e6'})
 SIGNATURE_ASSET_NAME = re.compile(r'^(?:newgcelogotransparent|058_sm_(?:fb|in)|(?:\d{2}-\d{2})?unitekemailbanner|goldbanner|emailsig\d+(?:-\d+)?(?:updated)?|graycliff-logo-esign\d+)_[0-9a-f-]{36}(?:-[0-9a-f]{10})?\.(?:png|jpe?g|gif|webp)$', re.I)
 
 def signature_graphic(name, mime, data):
