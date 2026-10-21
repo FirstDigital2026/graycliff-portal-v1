@@ -2,7 +2,8 @@ from pathlib import Path
 import sys, hashlib, base64, subprocess
 from email.message import EmailMessage
 import operations_intake as op
-assert len(op.SIGNATURE_IMAGE_HASHES)==7
+assert len(op.SIGNATURE_IMAGE_HASHES)>=7
+assert all(len(value)==64 and set(value)<=set('0123456789abcdef') for value in op.SIGNATURE_IMAGE_HASHES)
 logo=b'verified-signature-logo'
 op.SIGNATURE_IMAGE_HASHES.add(hashlib.sha256(logo).hexdigest())
 assert op.signature_graphic('image001.png','image/png',logo)

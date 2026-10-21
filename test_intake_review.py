@@ -61,7 +61,7 @@ class ReviewTests(unittest.TestCase):
         def db():
             with conn:yield conn
         store=Mock();store.list_row_attachments.return_value=[{'name':'Original-source.eml'},{'name':'site-photo.jpg'}]
-        def save(*args):
+        def save(*args, **kwargs):
             events.append('save_with_files')
             self.assertEqual(args[4],[{'name':'site-photo.jpg'}])
             if uncertain:raise RuntimeError('Connection interrupted')
@@ -86,3 +86,4 @@ class ReviewTests(unittest.TestCase):
         conn.close()
 
 if __name__=='__main__':unittest.main()
+

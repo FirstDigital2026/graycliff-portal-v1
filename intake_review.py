@@ -96,7 +96,7 @@ def handle(store, db, payload):
     # Keep the durable claim after uncertain network errors; never automatically repeat a partial import.
     files = graph.list_attachments(token,message['id'])
     stats = dict(created=0,updated=0,failed=0,ignored=0,replies=0)
-    jobkey = intake.save_message(store,token,message,item,files,key,stats)
+    jobkey = intake.save_message(store,token,message,item,files,key,stats,db=db)
     if expected and jobkey != expected:
         raise ValueError('Source job changed while saving. Office review required.')
     area,rid = jobkey.split(':')
@@ -104,6 +104,7 @@ def handle(store, db, payload):
     if not any(a.get('name','').lower().endswith('.eml') for a in attachments):
         raise ValueError('Original email retention could not be confirmed. Review the saved job before retrying.')
     detail = 'Reviewed in portal by '+str(payload['actor'])[:200]+'. Source email and work files retained.'
+    if stats.get('acknowledgment'):detail+=' Receipt acknowledgment: '+stats['acknowledgment']+'.'
     intake.audit(store,sid,key,State='Imported',Detail=detail,**{'Job Key':jobkey})
     with db() as c:
         c.execute('INSERT OR REPLACE INTO operations_mail VALUES (?,?,?)',(key,jobkey,'Imported'))

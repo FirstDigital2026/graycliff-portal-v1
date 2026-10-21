@@ -16,6 +16,7 @@ import mimetypes
 import base64
 from datetime import date, datetime, timedelta, timezone
 import graph_import as graph
+import intake_formats as formats
 
 AREA = {'Florence': 2515846899388292, 'Columbia': 8067039099834244}
 SEARCH_SHEETS = {**AREA, 'History':3889686678294404}
@@ -24,7 +25,7 @@ GUARD = threading.Lock()
 EXTRA = ['Portal Project ID', 'Portal Work Order', 'Portal NTP Due Date',
          'Portal Intake Key', 'Portal Job Type', 'Portal Incident ID',
          'Portal Claimed By', 'Assigned Technician', 'Portal Assigned At',
-         'Portal Email Threads', 'Portal Email Updated At','Portal Field Document Review']
+         'Portal Email Threads', 'Portal Email Updated At','Portal Field Document Review','Portal CRQ ID']
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -92,7 +93,7 @@ def spectrum_scope(message, attachments):
     text += '\n'+'\n'.join(content for _,content in graph._candidate_document_texts(attachments))
     if re.search(r'\b(?:Lumos|Kinetic|SEGRA|SEFH\s*\d+|Lewisville)\b', text, re.I):
         raise ValueError('Outside or mixed Spectrum scope (Lumos/Kinetic/SEGRA). Office review required; no operational job changed.')
-    return bool(re.search(r'\bSpectrum\b|@(?:[a-z0-9.-]+\.)?charter\.com\b', text, re.I))
+    return bool(re.search(r'\bSpectrum\b|@(?:[a-z0-9.-]+\.)?charter\.com\b', text, re.I)) or formats.trusted_no_light(message,graph._plain_text((message.get('body') or {}).get('content','')))
 
 
 def category_for_message(subject, body):
@@ -102,14 +103,14 @@ def category_for_message(subject, body):
     # A bare node is not itself authorization or an incident identifier. Only
     # promote it when the dispatch body establishes emergency restoration work.
     node = re.sub(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)+', '', subject.strip(), flags=re.I).strip()
-    if not re.fullmatch(r'(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{4,8}', node, re.I):
+    if not (re.fullmatch(r'(?=[A-Z0-9]*[A-Z])(?=[A-Z0-9]*\d)[A-Z0-9]{4,8}', node, re.I) or (re.match(r'^NODE\s*:',node,re.I) and formats.NODE.search(node))):
         return category
     if category_for_subject(body) == 'CRQ':
         return 'CRQ'
     if re.search(r'\b(?:no|not an?|without)\s+(?:outage|emergency)\b', body, re.I):
         return category
     incident = re.search(r'\b(?:outage|no[ -]+light|low[ -]+light|node\s+(?:100%\s+)?down|fiber\s+cut)\b', body, re.I)
-    dispatch = re.search(r'\b(?:please\s+(?:run|roll|dispatch)|roll\s+(?:a\s+)?splicer|ASAP|en\s*route|engag(?:e|ed|ing))\b', body, re.I)
+    dispatch = re.search(r'\b(?:please\s+(?:run|roll|dispatch)|roll\s+(?:a\s+)?splicer|ASAP|en\s*route|sent\s+to\s+Graycliff\s+to\s+fix|engag(?:e|ed|ing))\b', body, re.I)
     return 'Outage' if incident and dispatch else category
 
 
@@ -123,20 +124,22 @@ def parse(message, attachments):
     category = category_for_message(subject, body)
     crq = category == 'CRQ'
     outage = category == 'Outage'
-    if not ntp and not pid and not crq and not outage:
+    if not ntp and not pid and not crq and not outage and not formats.PUSH.search(subject):
         raise ValueError('Email format needs review: no reliable PID, NTP, CRQ or outage subject.')
     parsed = ntp or graph.ParsedNtp('',pid.group(1) if pid else '',subject)
     # A coordinator's signature address is never a job location.
     if ntp:
         parsed.address = ''
         parsed.city = ''
+    document_ids={m.group(1) for _,text in graph._candidate_document_texts(attachments) if re.search(r'Work\s+Order\s*#',text,re.I) and (m:=re.search(r'PRISM\s+ID\s*:\s*(\d+)',text,re.I))}
+    if len(document_ids)>1 and not pid:raise ValueError('Multiple NTP jobs are attached. Office review required before importing.')
     parsed = graph.enrich_ntp_from_attachments(parsed,attachments)
     for filename,text in graph._candidate_document_texts(attachments):
         document_pid = re.search(r'PRISM\s+ID\s*:\s*(\d+)',text,re.I)
         if not document_pid or (pid and document_pid.group(1)!=pid.group(1)):
             continue
         work_order = re.search(r'Work\s+Order\s*#?\s*:\s*(\d+)',text,re.I)
-        city = re.search(r'\b([A-Za-z]+(?:\s+[A-Za-z]+)?),\s*SC\s+\d{5}\b',text,re.I)
+        city = re.search(r'\b([A-Za-z]+(?:[ \t]+[A-Za-z]+)?),[ \t]*SC[ \t]+\d{5}\b',text,re.I)
         if work_order:
             parsed.work_order = work_order.group(1)
         if city:
@@ -153,9 +156,13 @@ def parse(message, attachments):
     if not parsed.prism and pid:
         parsed.prism = pid.group(1)
     # Address in the subject is safer than a coordinator's address in a signature.
-    address = re.search(r'\b(\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#\'-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY)))(?![A-Za-z])',subject,re.I)
-    if address:
+    ntp_location=bool(parsed.address and parsed.city and parsed.prism and parsed.work_order)
+    address = re.search(r'\b('+formats.STREET+r')(?![A-Za-z])',subject,re.I)
+    if address and not parsed.address:
         parsed.address = address.group(1).strip()
+    appointment = formats.appointment(body) if crq else {}
+    if appointment.get('address') and not parsed.address:
+        parsed.address=appointment['address'];parsed.city=appointment['city']
     if outage:
         # Incident emails frequently have no PID and put the site only in the body.
         # Require a full location with city/state; exclude known signature offices.
@@ -178,11 +185,11 @@ def parse(message, attachments):
     parsed.city=re.sub(r'^(?:Road|Rd|Lane|Ln|Blvd|Boulevard|Dr|Drive|St|Street|Ct|Court|Ave|Avenue)\s+', '', parsed.city, flags=re.I)
     location_text = subject + ' ' + parsed.city + ' ' + parsed.address
     # A city in the job subject outranks column-layout artifacts in a PDF.
-    subject_cities = [c for c in graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | {'cheraw','sumter','lynchburg'} if re.search(r'\b'+re.escape(c)+r'\b',subject,re.I)]
-    if len(subject_cities)==1:
+    subject_cities = [c for c in graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | ({'cheraw','sumter','lynchburg'} | set(formats.EXTRA_CITIES)) if re.search(r'\b'+re.escape(c)+r'\b',subject,re.I)]
+    if len(subject_cities)==1 and not ntp_location:
         parsed.city=subject_cities[0].title()
     if not parsed.city:
-        cities = graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | {'cheraw','sumter','orangeburg','barnwell','blair','lynchburg'}
+        cities = graph.FLORENCE_CITIES | graph.COLUMBIA_CITIES | ({'cheraw','sumter','orangeburg','barnwell','blair','lynchburg'} | set(formats.EXTRA_CITIES))
         matches = [c for c in cities if re.search(r'\b'+re.escape(c)+r'\b',location_text,re.I)]
         if matches:
             parsed.city = max(matches,key=len).title()
@@ -191,11 +198,12 @@ def parse(message, attachments):
         parsed.market = 'Florence'
     if parsed.city.lower() in {'orangeburg','barnwell','blair','summerton','edgefield'}:
         parsed.market = 'Columbia'
+    if parsed.city.lower() in formats.EXTRA_CITIES:parsed.market=formats.EXTRA_CITIES[parsed.city.lower()]
     # Do not use dates in a quoted chain as a current NTP deadline.
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
             'city':parsed.city,'market':parsed.market,'ntp_due':parsed.due_date,
             'type':category,
-            'subject':subject,'body':body}
+            'subject':subject,'body':body,'crq_id':formats.crq_id(subject),'planned_date':appointment.get('planned_date','')}
 
 def normalized_address(text):
     text = str(text).lower()
@@ -212,6 +220,8 @@ def locate(store, item, linked=None):
             title = str(v.get('Task Name',''))
             match_pid = item['pid'] and (str(v.get('Portal Project ID','')) == item['pid'] or re.search(r'(?<!\d)'+re.escape(item['pid'])+r'(?!\d)',title))
             match_wo = item['wo'] and str(v.get('Portal Work Order','')) == item['wo']
+            crqid=item.get('crq_id','');match_crq=bool(crqid and crqid in {str(v.get('Portal CRQ ID','')),formats.crq_id(title),formats.crq_id(str(v.get('Notes','')))})
+            if match_crq and item.get('pid') and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:raise ValueError('CRQ identifier conflicts with the supplied PID.')
             normalize = lambda text: re.sub(r'[^a-z0-9]','',str(text).lower())
             address = normalized_address(item['address'])
             # Legacy rows often have a CRQ in the title but no PID column.
@@ -225,6 +235,8 @@ def locate(store, item, linked=None):
             if address_exists and not city_matches and not match_pid and not match_wo:
                 raise ValueError('This street address already exists with a different city. Review before creating a job.')
             match_address = address_exists and city_matches
+            existing_crq=str(v.get('Portal CRQ ID') or formats.crq_id(title) or formats.crq_id(str(v.get('Notes',''))))
+            if match_address and crqid and existing_crq and crqid!=existing_crq:raise ValueError('This location already has a different CRQ. Review the maintenance event before linking.')
             existing_type = str(v.get('Portal Job Type') or ('CRQ' if re.search(r'\bCRQ',title+' '+str(v.get('Notes','')),re.I) else 'Standard'))
             same_thread=bool(linked and linked[1]==sid and linked[2]['id']==row['id'])
             if not same_thread and match_address and (item.get('type')=='Project')!=(existing_type=='Project') and not match_pid and not match_wo:
@@ -233,7 +245,7 @@ def locate(store, item, linked=None):
                 raise ValueError('An outage at this address may be a separate event from the existing regular/CRQ job. Office review required before attaching or creating.')
             if match_address and item['pid'] and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:
                 raise ValueError('This address already has a different project ID. Office review required.')
-            if match_pid or match_wo or match_address:
+            if match_pid or match_wo or match_address or match_crq:
                 found.append((market,sid,row,v))
     if len(found)>1:
         raise ValueError('Multiple existing jobs match this identifier. Review before changing a job.')
@@ -288,7 +300,8 @@ def message_item(store, message, attachments):
         raise ValueError('Spectrum work scope is not established. Office review required before creating a job.')
     return item
 
-def save_message(store, token, message, item, attachments, key, state):
+def save_message(store, token, message, item, attachments, key, state, db=None):
+    state.pop("acknowledgment",None)
     linked = thread_match(store,message)
     found = locate(store,item,linked)
     if linked:
@@ -308,7 +321,7 @@ def save_message(store, token, message, item, attachments, key, state):
             raise ValueError('Area or job location is missing. Office review required before releasing to techs.')
         if item['type']=='Standard' and not item['ntp_due']:
             raise ValueError('NTP completion date is missing. Office review required before scheduling this normal job.')
-        if item['type']=='Outage' and re.search(r'\b(?:resolved|restored|completed)\b',item['body'],re.I):
+        if item['type']=='Outage' and formats.resolved_incident(item['body']):
             raise ValueError('Incident thread includes a resolution. Review before opening another active outage.')
         sid = AREA[market]
         row,old = None,{}
@@ -318,11 +331,17 @@ def save_message(store, token, message, item, attachments, key, state):
     # Existing CRQ classification and scheduled windows always take precedence.
     jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name',''))+' '+str(old.get('Notes',''))+' '+str(old.get('Status','')),re.I) else ('Standard' if row else item['type']))
     values['Portal Job Type'] = jobtype
+    if item.get('crq_id'):values['Portal CRQ ID']=item['crq_id']
+    incoming=message.get('receivedDateTime') or now()
+    newer=formats.newer_source(incoming,old.get('Portal Email Updated At'))
     closed = market=='History' or bool(old and (str(old.get('Portal Billing Status','')) == 'Submitted' or re.search(r'complete|billed',str(old.get('Status','')),re.I)))
-    if item['ntp_due'] and not closed:
+    if item['ntp_due'] and not closed and newer:
         values['Portal NTP Due Date'] = item['ntp_due']
         if jobtype in {'Standard','Project'}:
             values['Due Date'] = internal_due(item['ntp_due'])
+    if jobtype=='CRQ' and item.get('planned_date') and not closed and newer and not old.get('Portal Planning Audit') and not old.get('Portal Office Due Date'):
+        values.update({'Portal Planned Date':item['planned_date'],'Due Date':item['planned_date'],'Portal Work Shift':'Night'})
+        ensure_columns(store,sid,['Portal Planned Date','Portal Work Shift'])
     thread=str(message.get('conversationId') or '')
     try:
         threads=json.loads(str(old.get('Portal Email Threads') or '[]'))
@@ -331,7 +350,7 @@ def save_message(store, token, message, item, attachments, key, state):
     if thread and thread not in threads:
         threads.append(thread)
     values['Portal Email Threads']=json.dumps(threads)
-    values['Portal Email Updated At']=message.get('receivedDateTime') or now()
+    values['Portal Email Updated At']=incoming if newer else old['Portal Email Updated At']
     if not row:
         # Include the stable intake key in the creation itself for ambiguous failures.
         sheet = store.get_sheet(sid,force=True)
@@ -354,6 +373,9 @@ def save_message(store, token, message, item, attachments, key, state):
                         values.update({'Portal Claimed By':active[0].get('Email',''),'Assigned Technician':active[0].get('Technician',''),'Portal Assigned At':now(),'Status':'Assigned'})
             row = write(store,sid,values)
             state['created'] += 1
+            if db is not None:
+                import intake_receipt
+                intake_receipt.reserve(db,market.lower()+':'+str(row['id']),key)
     else:
         write(store,sid,values,row['id'])
         state['updated'] += 1
@@ -378,6 +400,9 @@ def save_message(store, token, message, item, attachments, key, state):
     # Preserve that existing workflow: an incoming email is source material,
     # not a field completion comment. Its full body and images are in the .eml
     # and extracted attachments above, with its receipt in the intake ledger.
+    if db is not None:
+        import intake_receipt
+        state['acknowledgment']=intake_receipt.finish(store,db,token,market.lower()+':'+str(row['id']),key)
     return market.lower()+':'+str(row['id'])
 
 # Verified signature logos, company banners and social icons. Do not infer from
@@ -386,7 +411,7 @@ def save_message(store, token, message, item, attachments, key, state):
 SIGNATURE_IMAGE_HASHES = {'0990d3f2302c522ed27042d372c114b73ce1f020c47cb4ac8a666e62f96d01d8', '165b6b300b32d80821729c32d3e14d831299ab1f573e61bde6ae6c7a8565acdf', '5ed189834a6c314bfd535d0a4549c2be4b0af40f5fa68203398434b3ddaa2630', '9976e00c16c669dc59a30d2687d6c0349c47e251150d13372583276b172cfcbe', '07191215e8e21acfa604ca800c479bff88ba2a53c5e8c5b3f8bb22b11e975490', 'd71b446a7542d7ee4134ef1296fc119ab9bccf021f9f777d9e4a7f6ca424f707', '9e577e39b49b66457ecbdc2bbec1479b3d6267fd55bda21337aa7027251fab60'}
 SIGNATURE_IMAGE_HASHES.update({'cb0628092ddea96bb040221b5c793dbbb792a67d0621bdfba170c07374d85801', '104b981f00ae0305dcb847fa096033e175fe5e71bb9e4175d68a4f414164db42', '104b91fbfbc89b3c41c3246a653763164bdbdf01be58a40155ad994ece4c33e6'})
 SIGNATURE_IMAGE_HASHES.update({'9de6407e9e1a46d414c47ecfcd30dc080f128afd44b8e1536ff63da9f381e695', '07191215e8e21acfa604ca800c479bff88ba2a53c5e8c5b3f8bb22b11e975490', '165b6b300b32d80821729c32d3e14d831299ab1f573e61bde6ae6c7a8565acdf', '09e120d0e3ef5cb87380de508ee94057c84dab603b12f2ea9ce0113c850b2535', '93d0457996d09d1dfd97a58f2d3b83606d588f603a6bccf7340288db0c560082', '104b981f00ae0305dcb847fa096033e175fe5e71bb9e4175d68a4f414164db42', '7e1dafd77b4781e9b8a24b0f179fda2ecb2fe3d0f04d9f90dc69b30727afc304', 'bc1143b8e99c4ab60418a2b056e8173bf180b9c5c0bd78ca502782ec5843b165', 'b4dd8313537e9ede03b2437e194bd604e406bbc3e5675c19530a87ad3325b55d', '6504968627c2a31ed1dc4515fb152918ed7c1634c633d485030c95f775ba83c5', '05cb96bf592a3767733489cb628887132f09e66ec67864566adc49c1794ede64', '1c4726a167eaa4e674abaa77c70f94d98221ce9da40ef975593030fb3ab63987', '4654c4a586b709add3be98118f87f213a63fe4830174c954f615669855e7954e', '91806d7e612bb2919b284c13b46b8e46163143af73661b45bf64df977d3c5749', '5ed189834a6c314bfd535d0a4549c2be4b0af40f5fa68203398434b3ddaa2630', '4007fbf56f3c5dd7bd6a086689f7aa60121a9dfc7dee06657d1d12516838c4d2', 'a39168612c1e962a26a145818f5bd87f1e950ac6f2bb768bd1ced6cdbaa93e14', '7e601c52e4f3e99d6d0bfae42f514b903f62b0bb4c6dfcfd55173e0ef1c6bb80', '3299571f903d5869410c038198971c4759cb3054b1abb501b785f16ce940ffb6', '8fe6f6fda9007a6b14a09de2ddfab6e884d1477251c779d00396f59301b9970a', 'e645c3cc4ca42a02d1eaf01e70978a75f654a219ae120b3d3bf298ab3c9a464a', 'd5449e6687366b8e7e7ba3c8c486569e85fc17f2b3fa3c7ae569826209d51437', '9976e00c16c669dc59a30d2687d6c0349c47e251150d13372583276b172cfcbe', 'c23845d3abe592c86d27f5e584656d3f9afb019f4b0cfd83cb4aa7d7165afbf2', '0990d3f2302c522ed27042d372c114b73ce1f020c47cb4ac8a666e62f96d01d8', '9e577e39b49b66457ecbdc2bbec1479b3d6267fd55bda21337aa7027251fab60', 'a35d4871381ef83a109c2904f035fddd0b1a4b99cf42d4b145ed191e562b4354', '85a7330c9cf1b16a02bcdf9c77b95a9535b312d968d198fd8824f48b3c7668ea', 'd71b446a7542d7ee4134ef1296fc119ab9bccf021f9f777d9e4a7f6ca424f707', 'cb0628092ddea96bb040221b5c793dbbb792a67d0621bdfba170c07374d85801', '69aab014b436ca57e34b9df90db5817d97faed5819e36b1dcb81cf13b3281fd6', '104b91fbfbc89b3c41c3246a653763164bdbdf01be58a40155ad994ece4c33e6', '563e6ba1b13e4eee04719b926578da433809f9e3eed21ad7f8b4d0c111295a94'})
-SIGNATURE_ASSET_NAME = re.compile(r'^(?:newgcelogotransparent|058_sm_(?:fb|in)|(?:\d{2}-\d{2})?unitekemailbanner|goldbanner|emailsig\d+(?:-\d+)?(?:updated)?|graycliff-logo-esign\d+)_[0-9a-f-]{36}(?:-[0-9a-f]{10})?\.(?:png|jpe?g|gif|webp)$', re.I)
+SIGNATURE_ASSET_NAME = re.compile(r'^(?:newgcelogotransparent|058_sm_(?:fb|in)|(?:\d{2}-\d{2})?unitekemailbanner|goldbanner|emailsig\d+(?:-\d+)?(?:updated)?|graycliff-logo-esign\d+|unitek-graphic-esign\d+)_[0-9a-f-]{36}(?:-[0-9a-f]{10})?\.(?:png|jpe?g|gif|webp)$', re.I)
 
 def signature_graphic(name, mime, data):
     if not str(mime).lower().startswith('image/'):
@@ -542,12 +567,14 @@ def run(store, db):
                 phase='reading documents'
                 # Graph's hasAttachments flag is false for messages containing only inline pictures.
                 attachments = graph.list_attachments(token,message['id'])
+                attachments = formats.enrich_push_parent(token,message,attachments)
                 item = message_item(store,message,attachments)
                 phase='saving job and source files'
-                jobkey = save_message(store,token,message,item,attachments,key,stats)
+                jobkey = save_message(store,token,message,item,attachments,key,stats,db=db)
                 phase='confirming import'
                 phone=notify_import_assignment(store,jobkey,key)
                 detail='Job and original email saved; existing field status preserved.'
+                if stats.get('acknowledgment'):detail+=' Receipt acknowledgment: '+stats['acknowledgment']+'.'
                 if phone:detail+=' Phone alert: '+phone.get('detail','Delivery needs attention.')
                 audit(store,sid,key,State='Imported',Detail=detail,**{'Job Key':jobkey})
                 with db() as connection:
