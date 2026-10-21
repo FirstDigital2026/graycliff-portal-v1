@@ -87,7 +87,7 @@ def eligible(e):
     if not e.get('committed') or e.get('action')!='status':
         return False
     return e.get('status')=='Field complete' or (
-        e.get('job',{}).get('type')=='Outage' and e.get('status') in {'En route','On site','Working','On hold'})
+        e.get('job',{}).get('type')=='Outage' and e.get('status') in {'Today','En route','On site','Working','On hold','Canceled'})
 
 def addresses(value):
     return [a.lower() for _,a in getaddresses([str(value or '')]) if re.fullmatch(r'[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+',a)]
@@ -161,7 +161,7 @@ def draft_event(e,route):
     location=', '.join(x for x in [job.get('title',''),job.get('city','')] if x)
     fields=[('Location',location),('Area',job.get('market',''))]
     if job.get('incidentId'):fields.append(('Incident',job['incidentId']))
-    fields.append(('Status','Hands off' if hands_off else e['status']))
+    fields.append(('Status','Hands off' if hands_off else ('Scheduled for today' if e['status']=='Today' else e['status'])))
     if hands_off:
         noc=str(e.get('nocTechnician') or e.get('after',{}).get('Portal NOC Closed By') or '').strip()
         if not noc:raise ThreadReview('CRQ completion is missing the closing NOC technician. Office review required.')
@@ -240,14 +240,23 @@ def dispatch(db,event_id,store=None):
         e=json.loads(row['payload'])
         if not policy or not after_activation(e['at'],policy[0]):
             raise RuntimeError('Email sending is paused or this update predates activation.')
+        if not eligible(e):
+            c.execute("UPDATE mail_event_outbox SET state='NOT_REQUIRED',detail='Only outage field updates or job completion require email.' WHERE event_id=?",(event_id,))
+            return
         if store is None:raise RuntimeError('Current job status must be verified before sending.')
         sheet=store.get_sheet(int(e['sheetId']),force=True)
         fresh=next((r for r in sheet.get('rows',[]) if str(r['id'])==str(e['rowId'])),None)
         columns={str(col['id']):col['title'] for col in sheet['columns']}
         values={columns.get(str(cell['columnId'])):cell.get('value','') for cell in (fresh or {}).get('cells',[])}
         expected=(e.get('after') or {}).get('Status') or {'Working':'In Progress','Field complete':'Complete'}.get(e['status'],e['status'])
-        if fresh is None or values.get('Status')!=expected or values.get('Portal Billing Status')=='Submitted':
-            c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Job moved, changed status, or billing was submitted. Stale email held.' WHERE event_id=?",(event_id,))
+        outage=e.get('job',{}).get('type')=='Outage'
+        # Each committed outage report belongs on the original thread, even
+        # when another field update arrives before this one reaches transport.
+        # Keep completion-only mail protected against reopening a regular job.
+        kind_changed=outage and values.get('Portal Job Type') not in (None,'','Outage')
+        incident_changed=outage and values.get('Portal Incident ID') and e.get('job',{}).get('incidentId') and str(values['Portal Incident ID'])!=str(e['job']['incidentId'])
+        if fresh is None or (not outage and values.get('Status')!=expected) or kind_changed or incident_changed or values.get('Portal Billing Status')=='Submitted':
+            c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Job moved, changed incident/category, billing was submitted, or a non-outage completion was reopened. Email held.' WHERE event_id=?",(event_id,))
             return
         draft=json.loads(row['draft']);transport=base64.b64encode(mime_message(draft))
         if len(transport)>3900000:raise ThreadReview('The update email is too large. Office review required; no email sent.')

@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email import policy
-sys.path.insert(1,'C:/Users/Thomas/Documents/Codex/2026-10-19/our/work/graycliff-portal-v1')
 import mail_automation as m
 m.SEND_ARMED=False  # Isolated fixture; real email transport is always mocked.
 
@@ -26,7 +25,7 @@ class Store:
 store=Store();route=m.resolve_thread(store,'fake',event);assert route['to']==['dispatch@example.com','office@firstdigitalsc.com'];assert route['cc']==['coord@example.com']
 d=m.draft_event(event,route);assert d['subject']=='Re: Test original outage';assert 'Splicing underway.' in d['text'];assert 'graycliff/spectrum field operations' not in d['text'].lower()
 assert 'Test Tech' not in d['text'] and 'Test Tech' not in d['html'];assert 'First Digital Operations' in d['html'];message=BytesParser(policy=policy.default).parsebytes(m.mime_message(d));assert message['In-Reply-To']=='<original@example.com>';assert message['From'].addresses[0].addr_spec==m.SENDER;assert str(message['Auto-Submitted'])=='auto-generated'
-assert m.eligible(event);assert not m.eligible({**event,'committed':False});assert not m.eligible({**event,'status':'Today'})
+assert m.eligible(event);assert not m.eligible({**event,'committed':False});assert m.eligible({**event,'status':'Today'})
 complete=m.draft_event({**event,'status':'Field complete'},route);assert complete['text'].startswith('Hands off — job complete\n');assert 'Splicing underway.' in complete['text'];assert 'billing preparation' in complete['text'];assert m.eligible({**event,'job':{'type':'Standard'},'status':'Field complete'})
 try:
  m.draft_event({**event,'job':{**event['job'],'type':'CRQ'},'status':'Field complete'},route)
@@ -34,7 +33,7 @@ try:
 except m.ThreadReview:pass
 noc_preview=m.draft_event({**event,'job':{**event['job'],'type':'CRQ'},'status':'Field complete','nocTechnician':'NOC <Name>'},route)
 assert 'NOC ticket closed by: NOC <Name>' in noc_preview['text'] and 'NOC &lt;Name&gt;' in noc_preview['html']
-for kind in ['Standard','CRQ']:
+for kind in ['Standard','CRQ','Project']:
  regular={**event,'job':{**event['job'],'type':kind},'status':'Field complete','note':'PRIVATE FIELD NOTE <do not email>','nocTechnician':'Sample NOC Tech'}
  preview=m.draft_event(regular,route)
  assert m.eligible(regular)
