@@ -374,7 +374,8 @@ def save_message(store, token, message, item, attachments, key, state):
 # generic imageNNN names, inline/CID disposition, dimensions or image file size.
 # The untouched original email remains attached as the source record.
 SIGNATURE_IMAGE_HASHES = {'0990d3f2302c522ed27042d372c114b73ce1f020c47cb4ac8a666e62f96d01d8', '165b6b300b32d80821729c32d3e14d831299ab1f573e61bde6ae6c7a8565acdf', '5ed189834a6c314bfd535d0a4549c2be4b0af40f5fa68203398434b3ddaa2630', '9976e00c16c669dc59a30d2687d6c0349c47e251150d13372583276b172cfcbe', '07191215e8e21acfa604ca800c479bff88ba2a53c5e8c5b3f8bb22b11e975490', 'd71b446a7542d7ee4134ef1296fc119ab9bccf021f9f777d9e4a7f6ca424f707', '9e577e39b49b66457ecbdc2bbec1479b3d6267fd55bda21337aa7027251fab60'}
-SIGNATURE_ASSET_NAME = re.compile('^(?:newgcelogotransparent|058_sm_(?:fb|in)|(?:\\d{2}-\\d{2})?unitekemailbanner|goldbanner)_[0-9a-f-]{36}\\.(?:png|jpe?g)$', re.I)
+SIGNATURE_IMAGE_HASHES.update({'104b981f00ae0305dcb847fa096033e175fe5e71bb9e4175d68a4f414164db42', '104b91fbfbc89b3c41c3246a653763164bdbdf01be58a40155ad994ece4c33e6'})
+SIGNATURE_ASSET_NAME = re.compile(r'^(?:newgcelogotransparent|058_sm_(?:fb|in)|(?:\d{2}-\d{2})?unitekemailbanner|goldbanner|emailsig\d+(?:-\d+)?(?:updated)?|graycliff-logo-esign\d+)_[0-9a-f-]{36}(?:-[0-9a-f]{10})?\.(?:png|jpe?g|gif|webp)$', re.I)
 
 def signature_graphic(name, mime, data):
     if not str(mime).lower().startswith('image/'):
@@ -393,9 +394,12 @@ def capture_email_files(store,token,message,sid,row_id,attachments,key):
         store.attach_file_to_row(sid,row_id,filename=eml_name,mime_type='message/rfc822',data=raw)
     parts = source_attachments(raw)
     decoded_files = [d for a in attachments if (d:=graph.attachment_bytes(a))] + parts
+    # Match content before saving either Graph or MIME copies. Outlook often
+    # renames a signature image to image001.png in one of those copies.
+    signature_hashes={hashlib.sha256(data).hexdigest() for name,mime,data in decoded_files if signature_graphic(name,mime,data)}
     saved_hashes={m.group(1) for n in names if (m:=re.search(r'-([a-f0-9]{10})(?:\.[^.]+)?$',n))}
     for name,mime,data in decoded_files:
-        if signature_graphic(name,mime,data):
+        if signature_graphic(name,mime,data) or hashlib.sha256(data).hexdigest() in signature_hashes:
             continue
         # Hash content, so revised files with the same filename are retained.
         digest=hashlib.sha256(data).hexdigest()[:10]
