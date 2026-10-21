@@ -77,8 +77,6 @@ def audit(store, sid, key, **values):
     return write(store,sid,{'Message Key':key,'Last Checked':now(),**values},found[0]['id'] if found else None)
 
 def category_for_subject(subject):
-    if re.search(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)*(?:\[PROJECT\]|(?:NEW\s+)?PROJECT\s*[:—-])|\bmulti[ -]day\s+project\b',subject,re.I):
-        return 'Project'
     # Planned CRQ/night maintenance stays distinct even when its purpose is
     # repairing low light. A night-time emergency alone is still an outage.
     if re.search(r'\bCRQ\s*[-#:]?\s*\d*\b|\b(?:night(?:time)?\s+(?:work|maintenance)|maintenance\s+window)\b',subject,re.I):
@@ -99,8 +97,6 @@ def spectrum_scope(message, attachments):
 
 def category_for_message(subject, body):
     category = category_for_subject(subject)
-    if category == 'Standard' and re.search(r'^\s*(?:job\s+)?category\s*:\s*projects?\s*$',body,re.I|re.M):
-        return 'Project'
     if category != 'Standard':
         return category
     # A bare node is not itself authorization or an incident identifier. Only
@@ -127,7 +123,7 @@ def parse(message, attachments):
     category = category_for_message(subject, body)
     crq = category == 'CRQ'
     outage = category == 'Outage'
-    if not ntp and not pid and not crq and not outage and category!='Project':
+    if not ntp and not pid and not crq and not outage:
         raise ValueError('Email format needs review: no reliable PID, NTP, CRQ or outage subject.')
     parsed = ntp or graph.ParsedNtp('',pid.group(1) if pid else '',subject)
     # A coordinator's signature address is never a job location.
@@ -195,14 +191,6 @@ def parse(message, attachments):
         parsed.market = 'Florence'
     if parsed.city.lower() in {'orangeburg','barnwell','blair','summerton','edgefield'}:
         parsed.market = 'Columbia'
-    if category=='Project':
-        # The office owns the planned location count; never estimate it here.
-        title=re.sub(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)+','',subject,flags=re.I).strip()
-        title=re.sub(r'^(?:\[PROJECT\]\s*|(?:NEW\s+)?PROJECT\s*[:—-]\s*)','',title,flags=re.I).strip()
-        if len(title)<4:raise ValueError('Project name is missing. Office review required.')
-        parsed.address=title
-        area=re.search(r'^\s*(?:Area|Market)\s*:\s*(Florence|Columbia)\s*$',body,re.I|re.M)
-        if area:parsed.market=area.group(1).title()
     # Do not use dates in a quoted chain as a current NTP deadline.
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
             'city':parsed.city,'market':parsed.market,'ntp_due':parsed.due_date,
@@ -375,7 +363,7 @@ def save_message(store, token, message, item, attachments, key, state):
             bridge(store,'POST','/fdgc/v1/project-provision',{'jobKey':market.lower()+':'+str(row['id'])})
         except Exception:
             ensure_columns(store,sid,['Portal Project Setup Review'])
-            write(store,sid,{'Portal Project Setup Review':'Project imported. Sheet/form setup needs office review; open Office project setup to retry.'},row['id'])
+            write(store,sid,{'Portal Project Setup Review':'Project sheet/form setup needs office review; open Office project setup to retry.'},row['id'])
     if market!='History':
         # Nonfinancial details and safe field documents are separate from the
         # retained original NTP/email. A document problem must not suppress dispatch.
