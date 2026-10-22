@@ -210,6 +210,13 @@ def parse(message, attachments):
     if parsed.city.lower() in {'orangeburg','barnwell','blair','summerton','edgefield'}:
         parsed.market = 'Columbia'
     if parsed.city.lower() in formats.EXTRA_CITIES:parsed.market=formats.EXTRA_CITIES[parsed.city.lower()]
+    # For unmapped towns, an explicit Graycliff dispatch list is area evidence.
+    # Keep known-city routing authoritative; ambiguous lists never select an area.
+    if not parsed.market and parsed.address and parsed.city:
+        routing = str((message.get('body') or {}).get('content',''))+' '+json.dumps({k:message.get(k,[]) for k in ('toRecipients','ccRecipients')})
+        areas={a.title() for a in re.findall(r'(?<![a-z0-9_.+-])ntp-(columbia|florence)@graycliffent\.com(?![a-z0-9_.-])',routing,re.I)}
+        if len(areas)==1:
+            parsed.market=areas.pop()
     # Do not use dates in a quoted chain as a current NTP deadline.
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
             'city':parsed.city,'market':parsed.market,'ntp_due':parsed.due_date,
