@@ -13,6 +13,8 @@ import urllib.request
 import email
 import email.policy
 import mimetypes
+import io
+import zipfile
 import base64
 from datetime import date, datetime, timedelta, timezone
 import graph_import as graph
@@ -167,6 +169,15 @@ def parse(message, attachments):
         # Incident emails frequently have no PID and put the site only in the body.
         # Require a full location with city/state; exclude known signature offices.
         pattern=r'\b(\d{1,6}\s+[A-Za-z0-9 .#\'-]{2,65}?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY))\.?\s*(?:NE|NW|SE|SW)?[, ]+([A-Za-z ]{2,30})[, ]+SC\b'
+        # A single explicitly identified MST service site outranks affected homes.
+        mst_sites={}
+        for mst in re.finditer(r'\bMST\s+(?:feeding|(?:service\s+)?address\s*[:=-]|(?:located\s+)?at)\s*'+pattern,body,re.I):
+            street,city=mst.group(1).strip(),mst.group(2).strip()
+            mst_sites[normalized_address(street)]=(street,city)
+        if len(mst_sites)==1:
+            parsed.address,parsed.city=next(iter(mst_sites.values()))
+        elif len(mst_sites)>1:
+            raise ValueError('Multiple explicit MST service sites. Office review is required.')
         sites={}
         for found in re.finditer(pattern,body,re.I):
             street,city=found.group(1).strip(),found.group(2).strip()
@@ -444,7 +455,19 @@ def capture_email_files(store,token,message,sid,row_id,attachments,key):
         stem,ext = os.path.splitext(name)
         name = stem[:110]+'-'+digest+ext
         if name not in names:
-            store.attach_file_to_row(sid,row_id,filename=name,mime_type=mime,data=data)
+            zipped_name=name+'.zip'
+            if zipped_name not in names:
+                try:
+                    store.attach_file_to_row(sid,row_id,filename=name,mime_type=mime,data=data)
+                except Exception as exc:
+                    # Only the explicit unsupported-file response permits ZIP fallback.
+                    if not re.search(r'"errorCode"\s*:\s*5021\b',str(exc)):
+                        raise
+                    archive=io.BytesIO()
+                    with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
+                        z.writestr(os.path.basename(name.replace('\\','/')),data)
+                    store.attach_file_to_row(sid,row_id,filename=zipped_name,mime_type='application/zip',data=archive.getvalue())
+                    names.add(zipped_name)
             names.add(name)
         saved_hashes.add(digest)
     for attachment in attachments:
