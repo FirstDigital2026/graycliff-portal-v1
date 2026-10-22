@@ -6,7 +6,7 @@ import graph_import as graph
 PUSH = re.compile(r'\bpush[ -]+light\b',re.I)
 NODE = re.compile(r'\b\d[A-Z]\d{1,3}E\b',re.I)
 STREET = r"\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#'\-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY|BLVD|BOULEVARD|CIR|CIRCLE|WAY|PKWY|PARKWAY))(?:\s+(?:EXT|EXTENSION))?(?:\s+(?:N|S|E|W|NE|NW|SE|SW))?"
-EXTRA_CITIES = {'mcbee':'Florence','cheraw':'Florence','lynchburg':'Florence','aiken':'Columbia','jackson':'Columbia','barnwell':'Columbia','orangeburg':'Columbia','blair':'Columbia','summerton':'Columbia','edgefield':'Columbia','johnston':'Columbia'}
+EXTRA_CITIES = {'eastover':'Columbia','mcbee':'Florence','cheraw':'Florence','lynchburg':'Florence','aiken':'Columbia','jackson':'Columbia','barnwell':'Columbia','orangeburg':'Columbia','blair':'Columbia','summerton':'Columbia','edgefield':'Columbia','johnston':'Columbia'}
 
 def newer_source(incoming, previous):
     if not previous:return True
