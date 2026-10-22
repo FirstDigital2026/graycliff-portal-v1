@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.executors.pool import ThreadPoolExecutor
+from memory_runtime import background_job
 from flask import (
     Flask,
     abort,
@@ -1213,9 +1215,9 @@ def start_scheduler() -> None:
         return
 
     minutes = max(int(os.getenv("TECH_SYNC_MINUTES", "15")), 5)
-    scheduler = BackgroundScheduler(daemon=True)
+    scheduler = BackgroundScheduler(daemon=True, executors={"default": ThreadPoolExecutor(1)}, job_defaults={"misfire_grace_time": 900})
     scheduler.add_job(
-        sync_technician_contacts,
+        background_job(sync_technician_contacts, store),
         "interval",
         minutes=minutes,
         id="technician_contact_sync",
@@ -1223,7 +1225,7 @@ def start_scheduler() -> None:
         coalesce=True,
     )
     scheduler.add_job(
-        sync_billing_queue,
+        background_job(sync_billing_queue, store),
         "interval",
         minutes=minutes,
         id="billing_queue_sync",
@@ -1231,7 +1233,7 @@ def start_scheduler() -> None:
         coalesce=True,
     )
     scheduler.add_job(
-        sync_mobile_field_sheets,
+        background_job(sync_mobile_field_sheets, store),
         "interval",
         minutes=minutes,
         id="mobile_field_sheet_sync",
@@ -1239,7 +1241,7 @@ def start_scheduler() -> None:
         coalesce=True,
     )
     scheduler.add_job(
-        import_graycliff_mailbox,
+        background_job(import_graycliff_mailbox, store),
         "interval",
         minutes=1,
         id="graycliff_mailbox_import",
@@ -1247,7 +1249,7 @@ def start_scheduler() -> None:
         coalesce=True,
     )
     scheduler.add_job(
-        process_graycliff_status_updates,
+        background_job(process_graycliff_status_updates, store),
         'interval', seconds=30, id='graycliff_status_email_backup',
         max_instances=1, coalesce=True,
     )

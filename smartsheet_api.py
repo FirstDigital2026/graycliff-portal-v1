@@ -9,6 +9,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from memory_runtime import object_bytes
 
 BASE_URL = "https://api.smartsheet.com/2.0"
 INTEGRATION_SOURCE = "APPLICATION,FirstDigital,GraycliffCloudPortal"
@@ -22,6 +23,7 @@ class SmartsheetError(RuntimeError):
 class CacheItem:
     expires_at: float
     value: Any
+    size: int = 0
 
 
 class SmartsheetClient:
@@ -30,6 +32,9 @@ class SmartsheetClient:
         self.ttl = ttl
         self._cache: dict[str, CacheItem] = {}
         self._lock = threading.RLock()
+        self.cache_entries = 8
+        self.cache_bytes = 16 * 1024 * 1024
+        self.cache_item_bytes = 8 * 1024 * 1024
 
     @property
     def enabled(self) -> bool:
@@ -100,17 +105,27 @@ class SmartsheetClient:
         key = f"sheet:{sheet_id}"
         now = time.time()
         with self._lock:
+            for expired in [k for k,v in self._cache.items() if v.expires_at <= now]:
+                self._cache.pop(expired, None)
             cached = self._cache.get(key)
             if not force and cached and cached.expires_at > now:
+                self._cache.pop(key)
+                self._cache[key] = cached
                 return cached.value
+            self._cache.pop(key, None)
 
         value = self._request(
             "GET",
             f"/sheets/{sheet_id}",
             query={"include": "attachments,discussions", "exclude": "filteredOutRows"},
         )
+        size = object_bytes(value, self.cache_item_bytes)
         with self._lock:
-            self._cache[key] = CacheItem(now + self.ttl, value)
+            if self.ttl > 0 and size <= self.cache_item_bytes:
+                self._cache.pop(key, None)
+                while self._cache and (len(self._cache) >= self.cache_entries or sum(v.size for v in self._cache.values()) + size > self.cache_bytes):
+                    self._cache.pop(next(iter(self._cache)))
+                self._cache[key] = CacheItem(time.time() + self.ttl, value, size)
         return value
 
     def get_column(self, sheet_id: int, column_id: int) -> dict[str, Any]:
