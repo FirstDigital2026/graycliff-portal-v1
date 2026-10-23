@@ -77,7 +77,7 @@ def collect(store, payload):
         transport.validate_size(result)
     return result
 
-def quantity_totals(raw):
+def quantity_layout(raw):
     """Read bounded quantity inputs; never trust stale cached totals or run macros."""
     ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
     try:
@@ -95,17 +95,22 @@ def quantity_totals(raw):
                 v=c.find('s:v',ns)
                 if c.attrib.get('t')=='inlineStr':return ''.join(c.find('s:is',ns).itertext())
                 return ss[int(v.text)] if c.attrib.get('t')=='s' and v is not None else (v.text if v is not None else '')
+            total_rows=[]
+            for row in range(3,29):
+                if text(cells.get('A'+str(row))).strip().lower()=='totals' or text(cells.get('S'+str(row))).strip().lower()=='totals':total_rows.append(row)
+            if len(total_rows)!=1:raise ValueError('The spreadsheet must have one totals row directly below the completed work.')
+            total_row=total_rows[0]
             for c in cells.values():
                 f=c.find('s:f',ns)
                 if f is not None and '*' in (f.text or ''):raise ValueError('This spreadsheet contains dollar multipliers. Use the quantities-only template; pricing stays with the office.')
-                if int(re.search(r'\d+',c.attrib['r'])[0])>=29 and text(c):
+                if int(re.search(r'\d+',c.attrib['r'])[0])>total_row and text(c):
                     raise ValueError('Remove the dollar row using the quantities-only template before submitting.')
             totals={}
             for col in 'BCDEFGHIJKLMNOPQR':
                 code=text(cells.get(col+'1'))
                 if not re.fullmatch(r'[A-Z]{2}\d{2}[A-Z]?',code):raise ValueError('The spreadsheet unit-code headers do not match the template.')
                 total=Decimal(0)
-                for row in range(2,28):
+                for row in range(2,total_row):
                     c=cells.get(col+str(row));value=text(c)
                     if not value:continue
                     if c.find('s:f',ns) is not None:raise ValueError('Enter numeric quantities in the input rows.')
@@ -114,12 +119,15 @@ def quantity_totals(raw):
                     if not n.is_finite() or not 0<=n<=10000000:raise ValueError('Quantity is outside the supported range.')
                     total+=n
                 totals[code]=float(total)
-            return totals
+            return totals,total_row
     except (zipfile.BadZipFile,ET.ParseError,KeyError):raise ValueError('The work completed spreadsheet is not a readable .xlsx file.')
 
+def quantity_totals(raw):
+    return quantity_layout(raw)[0]
 def price_spreadsheet(raw, rates):
     """Add the private rate row to the outgoing copy, keeping the field copy unpriced."""
-    quantities=quantity_totals(raw)
+    quantities,total_row=quantity_layout(raw)
+    amount_row=total_row+1
     if not isinstance(rates,dict) or set(rates)!=set(quantities):raise ValueError('The office unit-rate configuration is incomplete. Nothing was sent.')
     lines=[];total=Decimal(0)
     for code,quantity in quantities.items():
@@ -138,12 +146,16 @@ def price_spreadsheet(raw, rates):
         ET.SubElement(formats,q('numFmt'),{'numFmtId':str(fmt),'formatCode':'"$"#,##0.00;[Red]("$"#,##0.00)'})
         formats.set('count',str(len(formats)))
         fills=styles.find(q('fills'));fill=len(fills);f=ET.SubElement(fills,q('fill'));pat=ET.SubElement(f,q('patternFill'),{'patternType':'solid'});ET.SubElement(pat,q('fgColor'),{'rgb':'FFFFC000'});ET.SubElement(pat,q('bgColor'),{'indexed':'64'});fills.set('count',str(len(fills)))
-        xfs=styles.find(q('cellXfs'));style=len(xfs);ET.SubElement(xfs,q('xf'),{'numFmtId':str(fmt),'fontId':'0','fillId':str(fill),'borderId':'0','xfId':'0','applyNumberFormat':'1','applyFill':'1'});xfs.set('count',str(len(xfs)))
+        xfs=styles.find(q('cellXfs'));style=len(xfs);money=ET.SubElement(xfs,q('xf'),{'numFmtId':str(fmt),'fontId':'0','fillId':str(fill),'borderId':'0','xfId':'0','applyNumberFormat':'1','applyFill':'1','applyAlignment':'1'});ET.SubElement(money,q('alignment'),{'horizontal':'center','vertical':'center'});xfs.set('count',str(len(xfs)))
         data=sheet.find(q('sheetData'));rows={int(r.attrib['r']):r for r in data.findall(q('row'))}
-        quantity_styles={c.attrib['r']:c.attrib.get('s') for c in rows.get(28,[]) if c.tag==q('c')}
-        for n in (28,29):
+        quantity_styles={c.attrib['r']:c.attrib.get('s') for c in rows.get(total_row,[]) if c.tag==q('c')}
+        # Retain the supplied template's currency-row style, including its borders.
+        if quantity_styles.get('B'+str(total_row)):
+            source=xfs[int(quantity_styles['B'+str(total_row)])]
+            for attr in ('fontId','borderId','xfId'):money.set(attr,source.get(attr,'0'))
+        for n in (total_row,amount_row):
             if n not in rows:rows[n]=ET.Element(q('row'),{'r':str(n)});data.append(rows[n])
-        for n in (28,29):
+        for n in (total_row,amount_row):
             for cell in list(rows[n]):
                 if re.fullmatch(r'[B-S]'+str(n),cell.attrib.get('r','')):rows[n].remove(cell)
         def cell(ref,formula,value,style_id=None):
@@ -152,13 +164,15 @@ def price_spreadsheet(raw, rates):
             c=ET.SubElement(rows[int(re.search(r'\d+',ref)[0])],q('c'),attrs)
             ET.SubElement(c,q('f')).text=formula;ET.SubElement(c,q('v')).text=str(value)
         for col,line in zip('BCDEFGHIJKLMNOPQR',lines):
-            cell(col+'28','SUM('+col+'2:'+col+'27)',line['quantity'],quantity_styles.get(col+'28'))
-            cell(col+'29','ROUND('+col+'28*'+format(Decimal(str(rates[line['code']])),'f')+',2)',line['total'],style)
-        label=ET.SubElement(rows[28],q('c'),{'r':'S28','t':'inlineStr',**({'s':quantity_styles['S28']} if quantity_styles.get('S28') else {})});is_=ET.SubElement(label,q('is'));ET.SubElement(is_,q('t')).text='Totals'
-        cell('S29','SUM(B29:R29)',str(total),style)
+            ref=col+str(total_row)
+            cell(ref,'SUM('+col+'2:'+col+str(total_row-1)+')',line['quantity'],quantity_styles.get(ref))
+            cell(col+str(amount_row),'ROUND('+ref+'*'+format(Decimal(str(rates[line['code']])),'f')+',2)',line['total'],style)
+        label_ref='S'+str(total_row)
+        label=ET.SubElement(rows[total_row],q('c'),{'r':label_ref,'t':'inlineStr',**({'s':quantity_styles[label_ref]} if quantity_styles.get(label_ref) else {})});is_=ET.SubElement(label,q('is'));ET.SubElement(is_,q('t')).text='Totals'
+        cell('S'+str(amount_row),'SUM(B'+str(amount_row)+':R'+str(amount_row)+')',str(total),style)
         # Retain all other workbook parts and macro-free source bytes verbatim.
         dim=sheet.find(q('dimension'))
-        if dim is not None:dim.set('ref','A1:S29')
+        if dim is not None:dim.set('ref','A1:S'+str(amount_row))
         for row in sorted(list(data),key=lambda e:int(e.attrib['r'])):data.remove(row);data.append(row)
         book=ET.fromstring(z.read('xl/workbook.xml'));calc=book.find(q('calcPr'))
         if calc is None:calc=ET.SubElement(book,q('calcPr'))
@@ -175,7 +189,7 @@ def package_files(files,rates):
         f=dict(original)
         if f['role']=='spreadsheet':
             f['data'],pricing=price_spreadsheet(f['data'],rates)
-            f['name']=PurePath(f['name']).stem+' - Billing.xlsx'
+            f['name']=PurePath(f['name']).stem+'.xlsx'
             f['size']=len(f['data']);f['sha256']=hashlib.sha256(f['data']).hexdigest()
         priced.append(f)
     return priced,pricing
