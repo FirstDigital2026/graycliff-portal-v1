@@ -8,6 +8,7 @@ from email.message import EmailMessage
 from email import policy
 from email.utils import formatdate
 import mail_automation as mail
+import billing_transport as transport
 
 SHEETS = {2515846899388292, 8067039099834244}
 PATH = '/api/portal/billing'
@@ -40,10 +41,15 @@ def collect(store, payload):
     attached={str(a['id']):a for a in store.list_row_attachments(sid,rid)}
     selected=payload.get('files',{})
     if not isinstance(selected,dict):raise ValueError('Select the billing documents.')
+    selected=dict(selected)
     roles=['spreadsheet','map']+(['workbook'] if payload.get('workbookRequired') else [])
     if selected.get('workbook') and 'workbook' not in roles:roles.append('workbook')
     if not payload.get('workbookRequired') and not payload.get('workbookNotNeeded'):
         raise ValueError('Include the workbook or confirm it is not needed for this job.')
+    supporting=selected.pop('supporting',[])
+    if not isinstance(supporting,list) or len(supporting)>20:raise ValueError('Choose up to 20 supporting test files.')
+    for i,aid in enumerate(supporting):
+        role='supporting'+str(i);roles.append(role);selected[role]=str(aid)
     if len({str(selected.get(role,'')) for role in roles})!=len(roles):raise ValueError('Choose a different file for each document.')
     result=[]
     for role in roles:
@@ -51,15 +57,17 @@ def collect(store, payload):
         if not a:raise ValueError('The selected '+role+' is not attached to this job.')
         name=str(a.get('name',''));ext=PurePath(name).suffix.lower()
         if '\r' in name or '\n' in name or len(name)>200:raise ValueError('Invalid attachment name.')
-        if ext not in ({'.pdf'} if role=='map' else {'.xlsx','.xlsm'}):
+        allowed={'.pdf','.sor','.csv','.txt'} if role.startswith('supporting') else ({'.pdf'} if role=='map' else {'.xlsx','.xlsm'})
+        if ext not in allowed:
             raise ValueError('The splice map must be a PDF; spreadsheets and workbooks must be Excel files.')
         raw,_,_=store.download_attachment(sid,int(aid))
-        if len(raw)>2800000:raise ValueError('This package is too large for direct email. Ask the office to submit it manually; nothing was sent.')
-        if not raw.startswith(b'%PDF-' if ext=='.pdf' else b'PK'):
+        if len(raw)>transport.MAX_FILE:raise ValueError('Each billing file must be at most 15 MB. Nothing was sent.')
+        if ext in {'.pdf','.xlsx','.xlsm'} and not raw.startswith(b'%PDF-' if ext=='.pdf' else b'PK'):
             raise ValueError('The '+role+' does not match its file type.')
         if role=='spreadsheet' and not any(quantity_totals(raw).values()):
             raise ValueError('The spreadsheet has no completed quantities. Fill it out before submitting billing.')
         result.append({'role':role,'id':aid,'name':name,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'data':raw})
+        transport.validate_size(result)
     return result
 
 def quantity_totals(raw):
@@ -195,9 +203,8 @@ def mime_message(d, files):
     m['Auto-Submitted']='auto-generated';m['X-Auto-Response-Suppress']='All'
     m.set_content(d['text']);m.add_alternative(d['html'],subtype='html')
     for f in files:
-        ext=PurePath(f['name']).suffix.lower()
-        mime=({'maintype':'application','subtype':'pdf'} if ext=='.pdf' else
-              {'maintype':'application','subtype':'vnd.ms-excel.sheet.macroEnabled.12' if ext=='.xlsm' else 'vnd.openxmlformats-officedocument.spreadsheetml.sheet'})
+        main,sub=transport.content_type(f['name']).split('/',1)
+        mime={'maintype':main,'subtype':sub}
         m.add_attachment(f['data'],filename=f['name'],**mime)
     raw=m.as_bytes()
     if len(base64.b64encode(raw))>3900000:
@@ -226,7 +233,8 @@ def handle(store, db, payload):
         v=fresh_job(store,payload);originals=collect(store,payload)
         files,pricing=package_files(originals,payload.get('rates'))
         route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
-        pid=str(uuid.uuid4());d=draft(v,route,pid);mime_message(d,files)
+        pid=str(uuid.uuid4());d=draft(v,route,pid);transport.validate_size(files)
+        if sum(f['size'] for f in files)<=transport.DIRECT_BUDGET:mime_message(d,files)
         snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in files],
               'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'pricing':pricing}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
@@ -242,7 +250,9 @@ def handle(store, db, payload):
     for k in ['to','cc']:
         if route[k]!=snap['draft'][k]:raise ValueError('Original email recipients changed. Prepare the package again.')
     if route['messageId']!=snap['draft']['parent']:raise ValueError('The source email changed. Prepare the package again.')
-    raw=mime_message(snap['draft'],files)
+    transport.validate_size(files)
+    large=sum(f['size'] for f in files)>transport.DIRECT_BUDGET
+    raw=mime_message(snap['draft'],[] if large else files)
     # One send attempt per job at a time, across all prepared tabs and workers.
     with db() as c:
         c.execute('BEGIN IMMEDIATE')
@@ -251,8 +261,17 @@ def handle(store, db, payload):
         n=c.execute("UPDATE billing_package_outbox SET state='DISPATCHING' WHERE id=? AND state='PREPARED'",(r['id'],)).rowcount
         if n!=1:raise ValueError('This package is already being processed.')
     try:
-        mail.graph._request('POST',mail.graph.GRAPH_ROOT+'/users/'+mail.urllib.parse.quote(mail.SENDER,safe='')+'/sendMail',
-            token=mail.graph.access_token(),body=base64.b64encode(raw),headers={'Content-Type':'text/plain'})
+        if large:
+            def remember(draft_id):
+                snap['graphDraftId']=draft_id
+                with db() as c:c.execute("UPDATE billing_package_outbox SET snapshot=? WHERE id=?",(json.dumps(snap),r['id']))
+            transport.send_large(mail.graph,mail.SENDER,raw,files,remember)
+        else:
+            mail.graph._request('POST',mail.graph.GRAPH_ROOT+'/users/'+mail.urllib.parse.quote(mail.SENDER,safe='')+'/sendMail',
+                token=mail.graph.access_token(),body=base64.b64encode(raw),headers={'Content-Type':'text/plain'})
+    except transport.BeforeSendFailure:
+        with db() as c:c.execute("UPDATE billing_package_outbox SET state='PREPARED',detail='Attachment preparation failed before sending; no billing email sent.' WHERE id=?",(r['id'],))
+        raise
     except Exception:
         with db() as c:c.execute("UPDATE billing_package_outbox SET state='UNCERTAIN',detail='Check Sent Items before any manual action; automatic resend is blocked.' WHERE id=?",(r['id'],))
         raise ValueError('Microsoft did not confirm the result. Check Sent Items; automatic resend is blocked.')
