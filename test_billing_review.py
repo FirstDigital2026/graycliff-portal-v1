@@ -60,7 +60,7 @@ class UnpricedReviewTests(unittest.TestCase):
     def test_email_uses_the_selected_wording_and_keeps_thread(self):
         d=b.draft({'Task Name':'Example Job'},self.route,'test')
         self.assertIn('Please see the attached completed billing package for Example Job.',d['text'])
-        self.assertIn('We appreciate your business and look forward to continuing our partnership.',d['html']);self.assertNotIn('Billing package submitted',d['text'])
+        self.assertIn('We appreciate your business and look forward to our continued partnership.',d['html']);self.assertNotIn('Billing package submitted',d['text'])
         self.assertEqual(d['parent'],self.route['messageId'])
     def test_retired_test_requests_are_rejected(self):
         with self.assertRaisesRegex(ValueError,'removed'):

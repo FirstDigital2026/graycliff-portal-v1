@@ -236,7 +236,7 @@ def delivery_files(files, title):
 def draft(v, route, package_id):
     title=str(v.get('Task Name',''));city=str(v.get('City',''))
     opening='Please see the attached completed billing package for '+title+'.'
-    closing='We appreciate your business and look forward to continuing our partnership.'
+    closing='We appreciate your business and look forward to our continued partnership.'
     text=(opening+'\n\n'+closing+'\n\nThank you,\nFirst Digital\ngraycliffjobs@firstdigitalsc.com\n\n'
           'This is an automated message from our field processing app.')
     body=('<html><body style="font:15px Arial;color:#153349">'
