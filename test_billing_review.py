@@ -30,27 +30,12 @@ class UnpricedReviewTests(unittest.TestCase):
         self.mocks[-1].assert_not_called();self.mocks[5].assert_not_called()
         self.assertEqual(d['files'][0]['sha256'],self.files[0]['sha256'])
         with self.db() as c:snap=json.loads(c.execute('SELECT snapshot FROM billing_package_outbox').fetchone()[0])
-        self.assertNotIn('pricing',snap);self.assertEqual(snap['snapshotVersion'],3)
+        self.assertNotIn('pricing',snap);self.assertEqual(snap['snapshotVersion'],4)
         send={**self.payload,'op':'send','id':d['id']}
         self.assertEqual(b.handle(object(),self.db,send)['state'],'ACCEPTED')
         self.mocks[-1].assert_called_once_with(b'unpriced test',{'TEST':2})
         self.assertEqual(self.files[0]['data'],b'unpriced test')
         b.handle(object(),self.db,send);self.mocks[-1].assert_called_once();self.mocks[5].assert_called_once()
-    def test_test_copy_only_uses_one_recipient_and_does_not_block_normal_send(self):
-        p={**self.payload,'testTo':'tester@firstdigitalsc.com'}
-        d=b.handle(object(),self.db,p)
-        self.assertEqual(d['to'],['tester@firstdigitalsc.com']);self.assertEqual(d['cc'],[])
-        self.assertTrue(d['subject'].startswith('TEST ONLY:'))
-        with self.db() as c:snap=json.loads(c.execute('SELECT snapshot FROM billing_package_outbox').fetchone()[0])
-        self.assertEqual(snap['draft']['parent'],'');self.assertEqual(snap['draft']['references'],[])
-        self.assertEqual(b.handle(object(),self.db,{**p,'op':'send','id':d['id']})['state'],'ACCEPTED')
-        normal=b.handle(object(),self.db,self.payload)
-        self.assertEqual(normal['state'],'PREPARED');self.assertEqual(normal['to'],self.route['to'])
-    def test_test_recipient_rejects_external_and_multiple_addresses(self):
-        for address in ['outside@example.invalid','a@firstdigitalsc.com,b@firstdigitalsc.com','a@firstdigitalsc.com\nBcc: outside@example.invalid']:
-            with self.assertRaisesRegex(ValueError,'one First Digital'):
-                b.handle(object(),self.db,{**self.payload,'testTo':address})
-        self.mocks[5].assert_not_called()
     def test_outgoing_asbuilt_name_preserves_bytes_and_source(self):
         source=[{'role':'map','name':'Field-upload-abc-map.pdf','data':b'test map','size':8,'sha256':'test'}]
         renamed=b.delivery_files(source,'Example Job')
@@ -60,26 +45,13 @@ class UnpricedReviewTests(unittest.TestCase):
         self.assertNotIn('\\',b.delivery_files(source,'Bad\\name')[0]['name'])
     def test_email_uses_the_selected_wording_and_keeps_thread(self):
         d=b.draft({'Task Name':'Example Job'},self.route,'test')
-        self.assertIn('Please find attached the completed billing package for Example Job.',d['text'])
-        self.assertIn('process billing',d['html']);self.assertNotIn('Billing package submitted',d['text'])
+        self.assertIn('Please see the attached completed billing package for Example Job.',d['text'])
+        self.assertIn('We appreciate your business and look forward to continuing our partnership.',d['html']);self.assertNotIn('Billing package submitted',d['text'])
         self.assertEqual(d['parent'],self.route['messageId'])
-    def test_new_review_can_send_another_test_but_same_review_sends_once(self):
-        p={**self.payload,'testTo':'tester@firstdigitalsc.com'}
-        a=b.handle(object(),self.db,p)
-        first={**p,'op':'send','id':a['id']}
-        b.handle(object(),self.db,first)
-        c=b.handle(object(),self.db,p)
-        self.assertNotEqual(a['id'],c['id']);self.assertEqual(c['state'],'PREPARED')
-        b.handle(object(),self.db,{**p,'op':'send','id':c['id']})
-        b.handle(object(),self.db,first);self.assertEqual(self.mocks[5].call_count,2)
-        with self.assertRaisesRegex(ValueError,'selected recipient'):
-            b.handle(object(),self.db,{**first,'testTo':'different@firstdigitalsc.com'})
-    def test_uncertain_test_blocks_new_test_reviews(self):
-        p={**self.payload,'testTo':'tester@firstdigitalsc.com'}
-        d=b.handle(object(),self.db,p)
-        with self.db() as c:c.execute("UPDATE billing_package_outbox SET state='UNCERTAIN' WHERE id=?",(d['id'],))
-        with self.assertRaisesRegex(ValueError,'uncertain'):
-            b.handle(object(),self.db,p)
+    def test_retired_test_requests_are_rejected(self):
+        with self.assertRaisesRegex(ValueError,'removed'):
+            b.handle(object(),self.db,{**self.payload,'testTo':'tester@firstdigitalsc.com'})
+        self.mocks[5].assert_not_called()
     def test_priced_review_is_unavailable(self):
         with self.assertRaisesRegex(ValueError,'unpriced'):
             b.handle(object(),self.db,{**self.payload,'op':'review_pricing'})

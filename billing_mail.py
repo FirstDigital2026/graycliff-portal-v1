@@ -207,13 +207,12 @@ def delivery_files(files, title):
 
 def draft(v, route, package_id):
     title=str(v.get('Task Name',''));city=str(v.get('City',''))
-    opening='Please find attached the completed billing package for '+title+'.'
-    included='Included are the work completed spreadsheet, splicing asbuilt, and fiber asbuilt workbook when applicable.'
-    closing='Please let us know if anything else is needed to process billing.'
-    text=(opening+'\n\n'+included+'\n\n'+closing+'\n\nThank you,\nFirst Digital\ngraycliffjobs@firstdigitalsc.com\n\n'
+    opening='Please see the attached completed billing package for '+title+'.'
+    closing='We appreciate your business and look forward to continuing our partnership.'
+    text=(opening+'\n\n'+closing+'\n\nThank you,\nFirst Digital\ngraycliffjobs@firstdigitalsc.com\n\n'
           'This is an automated message from our field processing app.')
     body=('<html><body style="font:15px Arial;color:#153349">'
-          '<p>'+html.escape(opening)+'</p><p>'+html.escape(included)+'</p><p>'+html.escape(closing)+'</p><p>Thank you,</p>'
+          '<p>'+html.escape(opening)+'</p><p>'+html.escape(closing)+'</p><p>Thank you,</p>'
           '<hr><img src="'+mail.LOGO+'" width="160" alt="First Digital">'
           '<p><strong>First Digital</strong><br>graycliffjobs@firstdigitalsc.com</p>'
           '<p style="font-size:11px;color:#63798a">This is an automated message from our field processing app.</p></body></html>')
@@ -244,27 +243,9 @@ def mime_message(d, files):
 def receipt(row):
     return {'id':row['id'],'state':row['state'],'sentAt':row['sent_at'],'message':row['detail'] or ''}
 
-def test_recipient(payload):
-    address=str(payload.get('testTo','')).strip().lower()
-    if address and not re.fullmatch(r'[a-z0-9._+%-]+@firstdigitalsc\.com',address):raise ValueError('Test emails must go to one First Digital work address.')
-    return address
-
 def handle(store, db, payload):
-    test_to=test_recipient(payload)
+    if payload.get('testTo'):raise ValueError('Test sending has been removed. Reload the billing screen before continuing.')
     initialize(db);key=str(payload['sheetId'])+':'+str(payload['rowId']);op=payload.get('op')
-    if test_to:
-        key+=':test:'+hashlib.sha256(test_to.encode()).hexdigest()[:20]
-        if op=='prepare':
-            with db() as c:
-                pending=c.execute("SELECT id FROM billing_package_outbox WHERE (job_key=? OR job_key LIKE ?) AND state IN ('UNCERTAIN','DISPATCHING') LIMIT 1",(key,key+':run:%')).fetchone()
-            if pending:raise ValueError('A previous test send has an uncertain outcome. Check Sent Items before another test.')
-            key+=':run:'+str(uuid.uuid4())
-        elif op=='send':
-            with db() as c:
-                prior_test=c.execute('SELECT job_key FROM billing_package_outbox WHERE id=?',(str(payload.get('id','')),)).fetchone()
-            if not prior_test or not (prior_test['job_key']==key or prior_test['job_key'].startswith(key+':run:')):raise ValueError('Prepare and review this test for the selected recipient before sending.')
-            key=prior_test['job_key']
-
     if op=='review_pricing':raise ValueError('Billing review shows unpriced files. Prices are added only when sending.')
     with db() as c:
         accepted=c.execute("SELECT * FROM billing_package_outbox WHERE job_key=? AND state IN ('ACCEPTED','UNCERTAIN','DISPATCHING') ORDER BY created_at DESC LIMIT 1",(key,)).fetchone()
@@ -280,31 +261,28 @@ def handle(store, db, payload):
         files=delivery_files(originals,v.get('Task Name',''))
         route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
         pid=str(uuid.uuid4());d=draft(v,route,pid)
-        if test_to:
-            d['to']=[test_to];d['cc']=[];d['subject']='TEST ONLY: '+d['subject'];d['text']='TEST ONLY. This is not a customer billing submission.\n\n'+d['text'];d['html']='<p><strong>TEST ONLY. This is not a customer billing submission.</strong></p>'+d['html'];d['parent']='';d['references']=[]
         transport.validate_size(files)
         if sum(f['size'] for f in files)<=transport.DIRECT_BUDGET:mime_message(d,files)
         snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in originals],'deliveryFiles':[{k:v for k,v in f.items() if k!='data'} for f in files],
-              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':3,'sourceRoute':route}
+              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':4,'sourceRoute':route}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
-        return {'id':pid,'state':'PREPARED','pricingOnSend':True,'testTo':test_to,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['deliveryFiles']}
+        return {'id':pid,'state':'PREPARED','pricingOnSend':True,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['deliveryFiles']}
     if op!='send':raise ValueError('Unknown billing action.')
     with db() as c:r=c.execute('SELECT * FROM billing_package_outbox WHERE id=? AND job_key=?',(str(payload.get('id','')),key)).fetchone()
     if not r or r['state']!='PREPARED':raise ValueError('Prepare and review this package before sending.')
     if time.time()-r['created_at']>1800:raise ValueError('The review has expired. Prepare the package again.')
     snap=json.loads(r['snapshot'])
-    if snap.get('snapshotVersion')!=3:raise ValueError('Review this package again using the updated unpriced review screen.')
+    if snap.get('snapshotVersion')!=4:raise ValueError('Review this package again using the updated unpriced review screen.')
     fresh_job(store,snap['input']);originals=collect(store,snap['input'])
     if [{k:v for k,v in f.items() if k!='data'} for f in originals]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
     files,pricing=package_files(delivery_files(originals,snap['draft']['title']),snap['input'].get('rates'))
     snap['pricing']=pricing;snap['sentFiles']=[{k:v for k,v in f.items() if k!='data'} for f in files]
     # Resolve once more: never silently send to a changed email chain.
     route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
-    expected=snap.get('sourceRoute',{}) if test_to else snap['draft']
-    if test_to and (snap['input'].get('testTo','').strip().lower()!=test_to or snap['draft']['to']!=[test_to] or snap['draft']['cc']):raise ValueError('Test recipients changed. Prepare the test again.')
+    expected=snap['draft']
     for k in ['to','cc']:
         if route[k]!=expected[k]:raise ValueError('Original email recipients changed. Prepare the package again.')
-    if route['messageId']!=(expected.get('messageId') if test_to else expected['parent']):raise ValueError('The source email changed. Prepare the package again.')
+    if route['messageId']!=expected['parent']:raise ValueError('The source email changed. Prepare the package again.')
     transport.validate_size(files)
     large=sum(f['size'] for f in files)>transport.DIRECT_BUDGET
     raw=mime_message(snap['draft'],[] if large else files)
