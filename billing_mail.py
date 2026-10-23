@@ -252,7 +252,19 @@ def test_recipient(payload):
 def handle(store, db, payload):
     test_to=test_recipient(payload)
     initialize(db);key=str(payload['sheetId'])+':'+str(payload['rowId']);op=payload.get('op')
-    if test_to:key+=':test:'+hashlib.sha256(test_to.encode()).hexdigest()[:20]
+    if test_to:
+        key+=':test:'+hashlib.sha256(test_to.encode()).hexdigest()[:20]
+        if op=='prepare':
+            with db() as c:
+                pending=c.execute("SELECT id FROM billing_package_outbox WHERE (job_key=? OR job_key LIKE ?) AND state IN ('UNCERTAIN','DISPATCHING') LIMIT 1",(key,key+':run:%')).fetchone()
+            if pending:raise ValueError('A previous test send has an uncertain outcome. Check Sent Items before another test.')
+            key+=':run:'+str(uuid.uuid4())
+        elif op=='send':
+            with db() as c:
+                prior_test=c.execute('SELECT job_key FROM billing_package_outbox WHERE id=?',(str(payload.get('id','')),)).fetchone()
+            if not prior_test or not (prior_test['job_key']==key or prior_test['job_key'].startswith(key+':run:')):raise ValueError('Prepare and review this test for the selected recipient before sending.')
+            key=prior_test['job_key']
+
     if op=='review_pricing':raise ValueError('Billing review shows unpriced files. Prices are added only when sending.')
     with db() as c:
         accepted=c.execute("SELECT * FROM billing_package_outbox WHERE job_key=? AND state IN ('ACCEPTED','UNCERTAIN','DISPATCHING') ORDER BY created_at DESC LIMIT 1",(key,)).fetchone()

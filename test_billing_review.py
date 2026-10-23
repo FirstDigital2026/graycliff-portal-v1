@@ -63,6 +63,23 @@ class UnpricedReviewTests(unittest.TestCase):
         self.assertIn('Please find attached the completed billing package for Example Job.',d['text'])
         self.assertIn('process billing',d['html']);self.assertNotIn('Billing package submitted',d['text'])
         self.assertEqual(d['parent'],self.route['messageId'])
+    def test_new_review_can_send_another_test_but_same_review_sends_once(self):
+        p={**self.payload,'testTo':'tester@firstdigitalsc.com'}
+        a=b.handle(object(),self.db,p)
+        first={**p,'op':'send','id':a['id']}
+        b.handle(object(),self.db,first)
+        c=b.handle(object(),self.db,p)
+        self.assertNotEqual(a['id'],c['id']);self.assertEqual(c['state'],'PREPARED')
+        b.handle(object(),self.db,{**p,'op':'send','id':c['id']})
+        b.handle(object(),self.db,first);self.assertEqual(self.mocks[5].call_count,2)
+        with self.assertRaisesRegex(ValueError,'selected recipient'):
+            b.handle(object(),self.db,{**first,'testTo':'different@firstdigitalsc.com'})
+    def test_uncertain_test_blocks_new_test_reviews(self):
+        p={**self.payload,'testTo':'tester@firstdigitalsc.com'}
+        d=b.handle(object(),self.db,p)
+        with self.db() as c:c.execute("UPDATE billing_package_outbox SET state='UNCERTAIN' WHERE id=?",(d['id'],))
+        with self.assertRaisesRegex(ValueError,'uncertain'):
+            b.handle(object(),self.db,p)
     def test_priced_review_is_unavailable(self):
         with self.assertRaisesRegex(ValueError,'unpriced'):
             b.handle(object(),self.db,{**self.payload,'op':'review_pricing'})
