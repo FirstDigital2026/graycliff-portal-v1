@@ -371,6 +371,8 @@ def save_message(store, token, message, item, attachments, key, state, db=None):
     # Existing CRQ classification and scheduled windows always take precedence.
     jobtype = str(old.get('Portal Job Type','')) or ('CRQ' if re.search('CRQ',str(old.get('Task Name',''))+' '+str(old.get('Notes',''))+' '+str(old.get('Status','')),re.I) else ('Standard' if row else item['type']))
     values['Portal Job Type'] = jobtype
+    if jobtype=='Outage' and item.get('incident_id'):
+        values['Portal Incident ID']=item['incident_id']
     if item.get('crq_id'):values['Portal CRQ ID']=item['crq_id']
     incoming=message.get('receivedDateTime') or now()
     newer=formats.newer_source(incoming,old.get('Portal Email Updated At'))

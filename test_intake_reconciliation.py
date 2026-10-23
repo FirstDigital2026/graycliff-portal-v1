@@ -82,6 +82,17 @@ class ReconciliationTests(unittest.TestCase):
         self.assertTrue(intake.retained_import(store,'a'*64,'history:99'))
         self.assertFalse(intake.retained_import(store,'a'*64,'history:100'))
 
+    def test_existing_thread_keeps_completed_job_and_records_incident(self):
+        store=Store(**{'Task Name':'902 Fictional Hwy','Portal Job Type':'Outage','Portal Incident ID':'EV-FICTIONAL','Portal Email Threads':'["fictional-thread"]','Status':'Field complete'})
+        message=dict(self.message('Spectrum'),conversationId='fictional-thread')
+        item=dict(pid='',wo='',address='901 Fictional Dr',city='Newberry',market='Columbia',type='Outage',ntp_due='',incident_id='INC009999991111',subject=message['subject'],body='Move crews to the confirmed damage site')
+        with patch.object(intake,'write',return_value={'id':99}) as write,patch.object(intake,'ensure_columns'),patch.object(intake,'capture_email_files'),patch.dict('sys.modules',{'field_documents':Mock(sync_row=Mock())}):
+            result=intake.save_message(store,'fake',message,item,[],'x'*64,dict(created=0,updated=0))
+        self.assertEqual(result,'columbia:99')
+        first=write.call_args_list[0].args[2]
+        self.assertEqual(first['Portal Incident ID'],'INC009999991111')
+        self.assertNotIn('Status',first);self.assertNotIn('Task Name',first)
+
     def test_fixed_hold_is_retried_once_and_reconciles_without_duplicate_save(self):
         self.run_recovery(False)
 
