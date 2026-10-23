@@ -13,6 +13,34 @@ import billing_transport as transport
 SHEETS = {2515846899388292, 8067039099834244}
 PATH = '/api/portal/billing'
 
+def billing_route(store, payload):
+    """Keep the source thread, but use the private area policy for billing only."""
+    sid=int(payload['sheetId'])
+    if sid not in SHEETS:raise ValueError('Billing area is not supported. Nothing was sent.')
+    route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':sid,'rowId':payload['rowId']})
+    config=mail.bridge(store,'POST','/fdgc/v1/billing-recipients',{'sheetId':str(sid)})
+    return apply_billing_recipients(route,config,sid)
+
+def apply_billing_recipients(route, config, sheet_id):
+    if not isinstance(config,dict) or str(config.get('sheetId'))!=str(sheet_id):
+        raise ValueError('Billing recipients could not be verified. Nothing was sent.')
+    result=dict(route)
+    for field in ('to','cc'):
+        addresses=config.get(field)
+        if not isinstance(addresses,list) or not 1<=len(addresses)<=20:
+            raise ValueError('The billing recipient list is incomplete. Nothing was sent.')
+        clean=[]
+        for address in addresses:
+            if not isinstance(address,str) or not re.fullmatch(r'[A-Za-z0-9.!#$%&\'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',address):
+                raise ValueError('A billing email address is invalid. Nothing was sent.')
+            address=address.lower()
+            if address==mail.SENDER.lower():raise ValueError('Billing cannot be sent to its own mailbox.')
+            if address not in clean:clean.append(address)
+        result[field]=clean
+    if len(result['cc'])!=2 or set(result['to'])&set(result['cc']):
+        raise ValueError('Check the separate billing To and Cc lists. Nothing was sent.')
+    return result
+
 def initialize(db):
     with db() as c:
         c.execute('''CREATE TABLE IF NOT EXISTS billing_package_outbox (
@@ -259,12 +287,12 @@ def handle(store, db, payload):
     if op=='prepare':
         v=fresh_job(store,payload);originals=collect(store,payload)
         files=delivery_files(originals,v.get('Task Name',''))
-        route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
+        route=billing_route(store,payload)
         pid=str(uuid.uuid4());d=draft(v,route,pid)
         transport.validate_size(files)
         if sum(f['size'] for f in files)<=transport.DIRECT_BUDGET:mime_message(d,files)
         snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in originals],'deliveryFiles':[{k:v for k,v in f.items() if k!='data'} for f in files],
-              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':4,'sourceRoute':route}
+              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':5,'sourceRoute':route}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
         return {'id':pid,'state':'PREPARED','pricingOnSend':True,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['deliveryFiles']}
     if op!='send':raise ValueError('Unknown billing action.')
@@ -272,16 +300,16 @@ def handle(store, db, payload):
     if not r or r['state']!='PREPARED':raise ValueError('Prepare and review this package before sending.')
     if time.time()-r['created_at']>1800:raise ValueError('The review has expired. Prepare the package again.')
     snap=json.loads(r['snapshot'])
-    if snap.get('snapshotVersion')!=4:raise ValueError('Review this package again using the updated unpriced review screen.')
+    if snap.get('snapshotVersion')!=5:raise ValueError('Review this package again to confirm the updated billing recipients.')
     fresh_job(store,snap['input']);originals=collect(store,snap['input'])
     if [{k:v for k,v in f.items() if k!='data'} for f in originals]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
     files,pricing=package_files(delivery_files(originals,snap['draft']['title']),snap['input'].get('rates'))
     snap['pricing']=pricing;snap['sentFiles']=[{k:v for k,v in f.items() if k!='data'} for f in files]
     # Resolve once more: never silently send to a changed email chain.
-    route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
+    route=billing_route(store,payload)
     expected=snap['draft']
     for k in ['to','cc']:
-        if route[k]!=expected[k]:raise ValueError('Original email recipients changed. Prepare the package again.')
+        if route[k]!=expected[k]:raise ValueError('Billing recipients changed. Prepare and review the package again.')
     if route['messageId']!=expected['parent']:raise ValueError('The source email changed. Prepare the package again.')
     transport.validate_size(files)
     large=sum(f['size'] for f in files)>transport.DIRECT_BUDGET
