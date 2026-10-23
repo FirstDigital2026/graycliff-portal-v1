@@ -109,17 +109,17 @@ def send_large(graph, sender, draft_mime, files, remember_draft=lambda value: No
                 for start in range(0, f['size'], CHUNK):
                     put_chunk(session['uploadUrl'], f['data'][start:start + CHUNK], start, f['size'])
         # Confirm all files before allowing the single send attempt.
-        check = graph._request('GET', url + '?$select=isDraft,toRecipients,ccRecipients,subject,internetMessageHeaders', token=token)
+        check = graph._request('GET', url + '?$select=isDraft,toRecipients,ccRecipients,bccRecipients,subject,internetMessageHeaders', token=token)
         if not check.get('isDraft'):
             raise ValueError('The billing draft is no longer unsent.')
         reviewed=BytesParser(policy=policy.default).parsebytes(draft_mime)
-        for header,field in [('To','toRecipients'),('Cc','ccRecipients')]:
+        for header,field in [('To','toRecipients'),('Cc','ccRecipients'),('Bcc','bccRecipients')]:
             wanted=Counter(address.lower() for _,address in getaddresses(reviewed.get_all(header,[])))
             present=Counter(item.get('emailAddress',{}).get('address','').lower() for item in check.get(field,[]))
             if wanted!=present:raise ValueError('The draft recipients differ from the reviewed package.')
         if str(reviewed['Subject'])!=check.get('subject'):raise ValueError('The draft subject differs from the reviewed package.')
         headers={h['name'].lower():h['value'] for h in check.get('internetMessageHeaders',[])}
-        if str(reviewed['In-Reply-To'])!=headers.get('in-reply-to'):raise ValueError('Microsoft did not retain the reviewed original email thread.')
+        if str(reviewed.get('In-Reply-To',''))!=headers.get('in-reply-to',''):raise ValueError('Microsoft did not retain the reviewed original email thread.')
         attachments = graph._request('GET', url + '/attachments?$select=id,name,size,isInline', token=token)
         attached=[f for f in attachments.get('value',[]) if not f.get('isInline')]
         if Counter(f.get('name') for f in attached)!=Counter(f['name'] for f in files) or attachments.get('@odata.nextLink'):
