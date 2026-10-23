@@ -30,7 +30,7 @@ class UnpricedReviewTests(unittest.TestCase):
         self.mocks[-1].assert_not_called();self.mocks[5].assert_not_called()
         self.assertEqual(d['files'][0]['sha256'],self.files[0]['sha256'])
         with self.db() as c:snap=json.loads(c.execute('SELECT snapshot FROM billing_package_outbox').fetchone()[0])
-        self.assertNotIn('pricing',snap);self.assertEqual(snap['snapshotVersion'],2)
+        self.assertNotIn('pricing',snap);self.assertEqual(snap['snapshotVersion'],3)
         send={**self.payload,'op':'send','id':d['id']}
         self.assertEqual(b.handle(object(),self.db,send)['state'],'ACCEPTED')
         self.mocks[-1].assert_called_once_with(b'unpriced test',{'TEST':2})
@@ -51,6 +51,18 @@ class UnpricedReviewTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'one First Digital'):
                 b.handle(object(),self.db,{**self.payload,'testTo':address})
         self.mocks[5].assert_not_called()
+    def test_outgoing_asbuilt_name_preserves_bytes_and_source(self):
+        source=[{'role':'map','name':'Field-upload-abc-map.pdf','data':b'test map','size':8,'sha256':'test'}]
+        renamed=b.delivery_files(source,'Example Job')
+        self.assertEqual(renamed[0]['name'],'Splicing Asbuilt (Example Job).pdf')
+        self.assertEqual(renamed[0]['data'],source[0]['data'])
+        self.assertEqual(source[0]['name'],'Field-upload-abc-map.pdf')
+        self.assertNotIn('\\',b.delivery_files(source,'Bad\\name')[0]['name'])
+    def test_email_uses_the_selected_wording_and_keeps_thread(self):
+        d=b.draft({'Task Name':'Example Job'},self.route,'test')
+        self.assertIn('Please find attached the completed billing package for Example Job.',d['text'])
+        self.assertIn('process billing',d['html']);self.assertNotIn('Billing package submitted',d['text'])
+        self.assertEqual(d['parent'],self.route['messageId'])
     def test_priced_review_is_unavailable(self):
         with self.assertRaisesRegex(ValueError,'unpriced'):
             b.handle(object(),self.db,{**self.payload,'op':'review_pricing'})

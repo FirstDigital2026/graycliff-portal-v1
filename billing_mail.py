@@ -194,27 +194,35 @@ def package_files(files,rates):
         priced.append(f)
     return priced,pricing
 
+def delivery_files(files, title):
+    """Use a readable outgoing asbuilt name while retaining source bytes."""
+    title=re.sub(r'[\\/:*?"<>|\x00-\x1f]','-',str(title)).strip(' .')[:120] or 'Job'
+    result=[]
+    for original in files:
+        f=dict(original)
+        if f['role']=='map':f['name']='Splicing Asbuilt ('+title+')'+PurePath(f['name']).suffix.lower()
+        result.append(f)
+    return result
+
+
 def draft(v, route, package_id):
     title=str(v.get('Task Name',''));city=str(v.get('City',''))
-    text=('Billing package submitted\n\n'+title+(' · '+city if city else '')+
-          '\n\nPlease see the attached work completed spreadsheet and marked-up splice map. '
-          'The fiber asbuilt workbook is included when applicable.\n\n'
-          'Field work is complete. Please let us know if any additional closeout information is needed.\n\n'
-          'First Digital Operations\ngraycliffjobs@firstdigitalsc.com\n'
+    opening='Please find attached the completed billing package for '+title+'.'
+    included='Included are the work completed spreadsheet, splicing asbuilt, and fiber asbuilt workbook when applicable.'
+    closing='Please let us know if anything else is needed to process billing.'
+    text=(opening+'\n\n'+included+'\n\n'+closing+'\n\nThank you,\nFirst Digital\ngraycliffjobs@firstdigitalsc.com\n\n'
           'This is an automated message from our field processing app.')
-    body=('<html><body style="font:15px Arial;color:#153349"><h2>Billing package submitted</h2>'
-          '<p><strong>'+html.escape(title)+'</strong><br>'+html.escape(city)+'</p>'
-          '<p>Please see the attached work completed spreadsheet and marked-up splice map. '
-          'The fiber asbuilt workbook is included when applicable.</p>'
-          '<p>Field work is complete. Please let us know if any additional closeout information is needed.</p>'
+    body=('<html><body style="font:15px Arial;color:#153349">'
+          '<p>'+html.escape(opening)+'</p><p>'+html.escape(included)+'</p><p>'+html.escape(closing)+'</p><p>Thank you,</p>'
           '<hr><img src="'+mail.LOGO+'" width="160" alt="First Digital">'
-          '<p><strong>First Digital Operations</strong><br>graycliffjobs@firstdigitalsc.com</p>'
+          '<p><strong>First Digital</strong><br>graycliffjobs@firstdigitalsc.com</p>'
           '<p style="font-size:11px;color:#63798a">This is an automated message from our field processing app.</p></body></html>')
     subject=route['subject']
     if not subject.lower().startswith('re:'):subject='Re: '+subject
     return {'to':route['to'],'cc':route['cc'],'subject':subject,'parent':route['messageId'],
             'references':list(dict.fromkeys(route.get('references',[])+[route['messageId']]))[-30:],
             'text':text,'html':body,'eventId':'billing-'+package_id,'title':title}
+
 
 def mime_message(d, files):
     m=EmailMessage(policy=policy.SMTP);m['From']='First Digital <'+mail.SENDER+'>';m['To']=', '.join(d['to'])
@@ -257,26 +265,26 @@ def handle(store, db, payload):
         raise ValueError('A previous send has an uncertain outcome. The office must check Sent Items. It will not be sent again automatically.')
     if op=='prepare':
         v=fresh_job(store,payload);originals=collect(store,payload)
-        files=originals
+        files=delivery_files(originals,v.get('Task Name',''))
         route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
         pid=str(uuid.uuid4());d=draft(v,route,pid)
         if test_to:
             d['to']=[test_to];d['cc']=[];d['subject']='TEST ONLY: '+d['subject'];d['text']='TEST ONLY. This is not a customer billing submission.\n\n'+d['text'];d['html']='<p><strong>TEST ONLY. This is not a customer billing submission.</strong></p>'+d['html'];d['parent']='';d['references']=[]
         transport.validate_size(files)
         if sum(f['size'] for f in files)<=transport.DIRECT_BUDGET:mime_message(d,files)
-        snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in files],
-              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':2,'sourceRoute':route}
+        snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in originals],'deliveryFiles':[{k:v for k,v in f.items() if k!='data'} for f in files],
+              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':3,'sourceRoute':route}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
-        return {'id':pid,'state':'PREPARED','pricingOnSend':True,'testTo':test_to,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['files']}
+        return {'id':pid,'state':'PREPARED','pricingOnSend':True,'testTo':test_to,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['deliveryFiles']}
     if op!='send':raise ValueError('Unknown billing action.')
     with db() as c:r=c.execute('SELECT * FROM billing_package_outbox WHERE id=? AND job_key=?',(str(payload.get('id','')),key)).fetchone()
     if not r or r['state']!='PREPARED':raise ValueError('Prepare and review this package before sending.')
     if time.time()-r['created_at']>1800:raise ValueError('The review has expired. Prepare the package again.')
     snap=json.loads(r['snapshot'])
-    if snap.get('snapshotVersion')!=2:raise ValueError('Review this package again using the updated unpriced review screen.')
+    if snap.get('snapshotVersion')!=3:raise ValueError('Review this package again using the updated unpriced review screen.')
     fresh_job(store,snap['input']);originals=collect(store,snap['input'])
     if [{k:v for k,v in f.items() if k!='data'} for f in originals]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
-    files,pricing=package_files(originals,snap['input'].get('rates'))
+    files,pricing=package_files(delivery_files(originals,snap['draft']['title']),snap['input'].get('rates'))
     snap['pricing']=pricing;snap['sentFiles']=[{k:v for k,v in f.items() if k!='data'} for f in files]
     # Resolve once more: never silently send to a changed email chain.
     route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
