@@ -57,13 +57,20 @@ def collect(store, payload):
         if not a:raise ValueError('The selected '+role+' is not attached to this job.')
         name=str(a.get('name',''));ext=PurePath(name).suffix.lower()
         if '\r' in name or '\n' in name or len(name)>200:raise ValueError('Invalid attachment name.')
-        allowed={'.pdf','.sor','.csv','.txt'} if role.startswith('supporting') else ({'.pdf'} if role=='map' else {'.xlsx','.xlsm'})
+        allowed={'.pdf','.sor','.csv','.txt'} if role.startswith('supporting') else ({'.pdf','.jpg','.jpeg','.png'} if role=='map' else {'.xlsx','.xlsm'})
         if ext not in allowed:
-            raise ValueError('The splice map must be a PDF; spreadsheets and workbooks must be Excel files.')
+            raise ValueError('The completed-work asbuilt must be PDF, JPEG or PNG; spreadsheets and fiber workbooks must be Excel files.')
         raw,_,_=store.download_attachment(sid,int(aid))
         if len(raw)>transport.MAX_FILE:raise ValueError('Each billing file must be at most 15 MB. Nothing was sent.')
         if ext in {'.pdf','.xlsx','.xlsm'} and not raw.startswith(b'%PDF-' if ext=='.pdf' else b'PK'):
             raise ValueError('The '+role+' does not match its file type.')
+        if ext in {'.jpg','.jpeg','.png'}:
+            from PIL import Image
+            try:
+                with Image.open(io.BytesIO(raw)) as image:
+                    if image.format not in ({'PNG'} if ext=='.png' else {'JPEG'}) or image.width*image.height>40000000:raise ValueError('Invalid asbuilt photo.')
+                    image.verify()
+            except Exception as exc:raise ValueError('The asbuilt photo is not a readable matching JPEG or PNG.') from exc
         if role=='spreadsheet' and not any(quantity_totals(raw).values()):
             raise ValueError('The spreadsheet has no completed quantities. Fill it out before submitting billing.')
         result.append({'role':role,'id':aid,'name':name,'size':len(raw),'sha256':hashlib.sha256(raw).hexdigest(),'data':raw})

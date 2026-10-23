@@ -26,7 +26,7 @@ class BeforeSendFailure(ValueError):
 
 def content_type(name):
     ext = name.lower().rsplit('.', 1)[-1]
-    return {'pdf': 'application/pdf', 'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    return {'jpg':'image/jpeg','jpeg':'image/jpeg','png':'image/png','pdf': 'application/pdf', 'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             'xlsm': 'application/vnd.ms-excel.sheet.macroEnabled.12', 'csv': 'text/csv',
             'txt': 'text/plain', 'sor': 'application/octet-stream'}.get(ext, 'application/octet-stream')
 
