@@ -237,10 +237,7 @@ def receipt(row):
 
 def handle(store, db, payload):
     initialize(db);key=str(payload['sheetId'])+':'+str(payload['rowId']);op=payload.get('op')
-    if op=='review_pricing':
-        with db() as c:prepared=c.execute("SELECT * FROM billing_package_outbox WHERE id=? AND job_key=? AND state='PREPARED'",(str(payload.get('id','')),key)).fetchone()
-        if not prepared or time.time()-prepared['created_at']>1800:raise ValueError('Prepare a current package before reviewing pricing.')
-        return {'pricing':json.loads(prepared['snapshot']).get('pricing',{})}
+    if op=='review_pricing':raise ValueError('Billing review shows unpriced files. Prices are added only when sending.')
     with db() as c:
         accepted=c.execute("SELECT * FROM billing_package_outbox WHERE job_key=? AND state IN ('ACCEPTED','UNCERTAIN','DISPATCHING') ORDER BY created_at DESC LIMIT 1",(key,)).fetchone()
     if accepted and op in ('quantities','pricing'):
@@ -252,20 +249,24 @@ def handle(store, db, payload):
         raise ValueError('A previous send has an uncertain outcome. The office must check Sent Items. It will not be sent again automatically.')
     if op=='prepare':
         v=fresh_job(store,payload);originals=collect(store,payload)
-        files,pricing=package_files(originals,payload.get('rates'))
+        files=originals
         route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
         pid=str(uuid.uuid4());d=draft(v,route,pid);transport.validate_size(files)
         if sum(f['size'] for f in files)<=transport.DIRECT_BUDGET:mime_message(d,files)
         snap={'input':payload,'draft':d,'files':[{k:v for k,v in f.items() if k!='data'} for f in files],
-              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'pricing':pricing}
+              'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':2}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
-        return {'id':pid,'state':'PREPARED','pricingApplied':True,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['files']}
+        return {'id':pid,'state':'PREPARED','pricingOnSend':True,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['files']}
     if op!='send':raise ValueError('Unknown billing action.')
     with db() as c:r=c.execute('SELECT * FROM billing_package_outbox WHERE id=? AND job_key=?',(str(payload.get('id','')),key)).fetchone()
     if not r or r['state']!='PREPARED':raise ValueError('Prepare and review this package before sending.')
     if time.time()-r['created_at']>1800:raise ValueError('The review has expired. Prepare the package again.')
-    snap=json.loads(r['snapshot']);fresh_job(store,snap['input']);files,pricing=package_files(collect(store,snap['input']),snap['input'].get('rates'))
-    if [{k:v for k,v in f.items() if k!='data'} for f in files]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
+    snap=json.loads(r['snapshot'])
+    if snap.get('snapshotVersion')!=2:raise ValueError('Review this package again using the updated unpriced review screen.')
+    fresh_job(store,snap['input']);originals=collect(store,snap['input'])
+    if [{k:v for k,v in f.items() if k!='data'} for f in originals]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
+    files,pricing=package_files(originals,snap['input'].get('rates'))
+    snap['pricing']=pricing;snap['sentFiles']=[{k:v for k,v in f.items() if k!='data'} for f in files]
     # Resolve once more: never silently send to a changed email chain.
     route=mail.resolve_thread(store,mail.graph.access_token(),{'sheetId':payload['sheetId'],'rowId':payload['rowId']})
     for k in ['to','cc']:
@@ -279,7 +280,7 @@ def handle(store, db, payload):
         c.execute('BEGIN IMMEDIATE')
         prior=c.execute("SELECT id FROM billing_package_outbox WHERE job_key=? AND state IN ('DISPATCHING','UNCERTAIN','ACCEPTED')",(key,)).fetchone()
         if prior:raise ValueError('Another send is already being processed. Refresh before continuing.')
-        n=c.execute("UPDATE billing_package_outbox SET state='DISPATCHING' WHERE id=? AND state='PREPARED'",(r['id'],)).rowcount
+        n=c.execute("UPDATE billing_package_outbox SET state='DISPATCHING',snapshot=? WHERE id=? AND state='PREPARED'",(json.dumps(snap),r['id'])).rowcount
         if n!=1:raise ValueError('This package is already being processed.')
     try:
         if large:
