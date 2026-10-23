@@ -3,6 +3,7 @@ import hashlib, hmac, json, os, re, sqlite3, time, urllib.parse
 from datetime import date
 import graph_import as graph
 import operations_intake as intake
+import intake_formats as formats
 
 PATH = '/api/portal/intake-review'
 STATES = {'Needs review', 'Import failed', 'Received'}
@@ -48,6 +49,7 @@ def reviewed_item(payload, message):
     if item['ntp_due']:
         date.fromisoformat(item['ntp_due'])
     item['subject'] = message.get('subject','')
+    item['incident_id'] = formats.incident_id(item['subject'])
     return item
 
 def handle(store, db, payload):
@@ -116,8 +118,6 @@ def handle(store, db, payload):
             raise ValueError('Historical jobs require office review before changing their source record.')
     elif found:
         raise ValueError('An existing job matches this email. Select that job to link the source instead of creating a duplicate.')
-    elif item['type']=='Standard' and not item['ntp_due']:
-        raise ValueError('Enter the original NTP completion date. The job due date will be one calendar day earlier.')
     with db() as c:
         c.execute('CREATE TABLE IF NOT EXISTS portal_intake_review (message_key TEXT PRIMARY KEY, actor TEXT, started REAL, job_key TEXT)')
         prior = c.execute('SELECT * FROM portal_intake_review WHERE message_key=?',(key,)).fetchone()

@@ -21,6 +21,29 @@ def crq_id(subject):
     m=re.search(r'\bCRQ\s*[-#:]?\s*(\d{6,15})\b',subject,re.I)
     return 'CRQ'+m.group(1) if m else ''
 
+def incident_id(text):
+    match = re.search(r'\bINC\s*(\d{9,15})\b', str(text), re.I)
+    return 'INC'+match.group(1) if match else ''
+
+def dispatch_site(body):
+    """An explicit crew destination wins over quoted sites and signature offices.
+
+    Read instructions in source order, stopping at the first destination line.
+    Multiple destinations on that instruction remain a real ambiguity.
+    """
+    pattern = r'\b('+STREET+r')\s*[, ]+([A-Za-z .\'-]{2,35}?)\s*[, ]+SC\b'
+    instruction = r'\b(?:move\s+(?:(?:your|the|our)\s+)?crews?\s+(?:over\s+)?to|(?:send|dispatch|roll)\s+(?:(?:your|the|our|a)\s+)?(?:crews?|splicers?|techs?)\s+(?:over\s+)?to|(?:job|work|repair|damage)\s+(?:location|address)\s*[:=-])\s*'
+    for line in body.splitlines():
+        command = re.search(instruction, line, re.I)
+        if not command:
+            continue
+        sites = {(re.sub(r'\W','',m.group(1)).lower(),m.group(2).strip().lower()):(m.group(1).strip(),m.group(2).strip()) for m in re.finditer(pattern,line[command.end():],re.I)}
+        if len(sites)>1:
+            raise ValueError('Current dispatch instruction contains multiple possible sites. Office review is required.')
+        if sites:
+            return next(iter(sites.values()))
+    return None
+
 def appointment(body):
     # Only the first appointment header is current. Quoted older windows cannot win.
     where=re.search(r'(?im)^\s*Where:\s*([^\r\n]+)',body)

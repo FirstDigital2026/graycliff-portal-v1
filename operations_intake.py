@@ -9,6 +9,7 @@ import json
 import os
 import re
 import threading
+import sqlite3
 import urllib.request
 import email
 import email.policy
@@ -174,7 +175,10 @@ def parse(message, attachments):
         for mst in re.finditer(r'\bMST\s+(?:feeding|(?:service\s+)?address\s*[:=-]|(?:located\s+)?at)\s*'+pattern,body,re.I):
             street,city=mst.group(1).strip(),mst.group(2).strip()
             mst_sites[normalized_address(street)]=(street,city)
-        if len(mst_sites)==1:
+        destination=formats.dispatch_site(body)
+        if destination:
+            parsed.address,parsed.city=destination
+        elif len(mst_sites)==1:
             parsed.address,parsed.city=next(iter(mst_sites.values()))
         elif len(mst_sites)>1:
             raise ValueError('Multiple explicit MST service sites. Office review is required.')
@@ -221,7 +225,7 @@ def parse(message, attachments):
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
             'city':parsed.city,'market':parsed.market,'ntp_due':parsed.due_date,
             'type':category,
-            'subject':subject,'body':body,'crq_id':formats.crq_id(subject),'planned_date':appointment.get('planned_date','')}
+            'subject':subject,'body':body,'crq_id':formats.crq_id(subject),'incident_id':formats.incident_id(subject),'planned_date':appointment.get('planned_date','')}
 
 def normalized_address(text):
     text = str(text).lower()
@@ -236,6 +240,12 @@ def locate(store, item, linked=None):
         for row in sheet.get('rows',[]):
             v = vals(sheet,row)
             title = str(v.get('Task Name',''))
+            incoming_incident=item.get('incident_id','')
+            existing_incident=formats.incident_id(v.get('Portal Incident ID','')) or formats.incident_id(title) or formats.incident_id(str(v.get('Notes','')).split('\n')[0])
+            # A hub/address can have many outages. Different tickets are different work.
+            if incoming_incident and existing_incident and incoming_incident!=existing_incident:
+                continue
+            match_incident=bool(incoming_incident and incoming_incident==existing_incident)
             match_pid = item['pid'] and (str(v.get('Portal Project ID','')) == item['pid'] or re.search(r'(?<!\d)'+re.escape(item['pid'])+r'(?!\d)',title))
             match_wo = item['wo'] and str(v.get('Portal Work Order','')) == item['wo']
             crqid=item.get('crq_id','');match_crq=bool(crqid and crqid in {str(v.get('Portal CRQ ID','')),formats.crq_id(title),formats.crq_id(str(v.get('Notes','')))})
@@ -263,7 +273,7 @@ def locate(store, item, linked=None):
                 raise ValueError('An outage at this address may be a separate event from the existing regular/CRQ job. Office review required before attaching or creating.')
             if match_address and item['pid'] and v.get('Portal Project ID') and item['pid']!=v['Portal Project ID']:
                 raise ValueError('This address already has a different project ID. Office review required.')
-            if match_pid or match_wo or match_address or match_crq:
+            if match_pid or match_wo or match_address or match_crq or match_incident:
                 found.append((market,sid,row,v))
     if len(found)>1:
         raise ValueError('Multiple existing jobs match this identifier. Review before changing a job.')
@@ -294,6 +304,17 @@ def message_item(store, message, attachments):
     try:
         item = parse(message,attachments)
     except ValueError as exc:
+        if str(exc).startswith(('Incident email contains multiple possible sites.', 'Multiple explicit MST service sites.')):
+            subject=str(message.get('subject',''))
+            incident=formats.incident_id(subject)
+            exact=locate(store,{'pid':'','wo':'','address':'','city':'','incident_id':incident}) if incident else None
+            if exact:
+                old=exact[3]
+                return {'pid':str(old.get('Portal Project ID','')),'wo':str(old.get('Portal Work Order','')),
+                        'address':str(old.get('Task Name','')),'city':str(old.get('City','')),
+                        'market':exact[0],'ntp_due':'','type':str(old.get('Portal Job Type') or 'Outage'),
+                        'subject':subject,'body':graph._plain_text((message.get('body') or {}).get('content','')),
+                        'incident_id':incident}
         if not str(exc).startswith('Email format needs review:'):
             raise
         if not linked:
@@ -326,6 +347,9 @@ def save_message(store, token, message, item, attachments, key, state, db=None):
         if found and (found[1],found[2]['id'])!=(linked[1],linked[2]['id']):
             raise ValueError('Reply identifiers conflict with the job linked to this chain. Office review required.')
         old=linked[3]
+        old_incident=formats.incident_id(old.get('Portal Incident ID','')) or formats.incident_id(old.get('Task Name','')) or formats.incident_id(str(old.get('Notes','')).split('\n')[0])
+        if item.get('incident_id') and old_incident and item['incident_id']!=old_incident:
+            raise ValueError('This email chain contains a different incident ticket. Office review required before linking separate outages.')
         if item['pid'] and old.get('Portal Project ID') and item['pid']!=str(old['Portal Project ID']):
             raise ValueError('Reply PID differs from this chain’s job. Office review required.')
         if item['wo'] and old.get('Portal Work Order') and item['wo']!=str(old['Portal Work Order']):
@@ -337,8 +361,6 @@ def save_message(store, token, message, item, attachments, key, state, db=None):
         market = item['market']
         if market not in AREA or not item['address']:
             raise ValueError('Area or job location is missing. Office review required before releasing to techs.')
-        if item['type']=='Standard' and not item['ntp_due']:
-            raise ValueError('NTP completion date is missing. Office review required before scheduling this normal job.')
         if item['type']=='Outage' and formats.resolved_incident(item['body']):
             raise ValueError('Incident thread includes a resolution. Review before opening another active outage.')
         sid = AREA[market]
@@ -376,10 +398,11 @@ def save_message(store, token, message, item, attachments, key, state, db=None):
         if prior:
             row = prior[0]
         else:
-            incident = 'EV-'+hashlib.sha256(key.encode()).hexdigest()[:12].upper() if jobtype=='Outage' else ''
+            incident = (item.get('incident_id') or 'EV-'+hashlib.sha256(key.encode()).hexdigest()[:12].upper()) if jobtype=='Outage' else ''
+            planning_note='\nNTP completion date not supplied. Confirm scheduling date before planning work.' if jobtype=='Standard' and not item['ntp_due'] else ''
             values.update({'Task Name':(item['pid']+' · ' if item['pid'] else '')+item['address'],
                            'City':item['city'],'Portal Intake Key':key,'Portal Incident ID':incident,
-                           'Notes':'Email intake: '+item['subject']+'\n'+item['body'][:3000]})
+                           'Notes':'Email intake: '+item['subject']+planning_note+'\n'+item['body'][:3000]})
             if jobtype=='Outage':
                 from zoneinfo import ZoneInfo
                 today = datetime.now(ZoneInfo('America/New_York')).strftime('%Y-%m-%dT%H:%M')
@@ -567,6 +590,18 @@ def notify_import_assignment(store,jobkey,message_key):
     except Exception:
         return {'state':'NEEDS_ATTENTION','detail':'Assignment saved; phone notification could not be confirmed. Check phone delivery in System checks and contact the technician.'}
 
+def retained_import(store,key,jobkey):
+    """A durable receipt only clears a hold when its exact source is still saved."""
+    if not jobkey or ':' not in jobkey:return False
+    market,rid=jobkey.split(':',1)
+    sid=SEARCH_SHEETS.get(market.title())
+    if not sid:return False
+    sheet=store.get_sheet(sid,force=True)
+    matches=[row for row in sheet.get('rows',[]) if str(row['id'])==rid]
+    if len(matches)!=1:return False
+    name='Email-'+key[:20]+'.eml'
+    return any(a.get('name')==name for a in store.list_row_attachments(sid,matches[0]['id']))
+
 def run(store, db):
     # Three historical services use this repository. Only one may consume Inbox.
     if os.getenv('RENDER_SERVICE_ID','') != 'srv-d9p0jflbedkc73ds5tn0':
@@ -583,6 +618,20 @@ def run(store, db):
         seed_imported_threads(store,token,imported,db)
         stats = {'created':0,'updated':0,'failed':0,'ignored':0,'replies':0}
         messages = graph.list_recent_messages(token,top=40)
+        # Retry recognition holds after parser improvements. Never discard the
+        # held source, and never replay an uncertain portal save automatically.
+        ledger=store.get_sheet(sid,force=True)
+        holds={str(v.get('Message Key')):v for row in ledger.get('rows',[]) if (v:=vals(ledger,row)).get('State')=='Needs review' and str(v.get('Detail','')).startswith(('Incident email contains multiple possible sites.', 'NTP completion date is missing.'))}
+        retry_keys=set()
+        if holds:
+            for held in graph.list_folder_messages(token,review,top=40):
+                held_key=hashlib.sha256(str(held.get('internetMessageId') or held['id']).encode()).hexdigest()
+                if held_key not in holds:continue
+                with db() as connection:
+                    connection.execute('CREATE TABLE IF NOT EXISTS portal_intake_review (message_key TEXT PRIMARY KEY, actor TEXT, started REAL, job_key TEXT)')
+                    if connection.execute('SELECT 1 FROM portal_intake_review WHERE message_key=?',(held_key,)).fetchone():continue
+                messages.append(graph.get_message_details(token,held['id']))
+                retry_keys.add(held_key)
         for message in reversed(messages):
             key = hashlib.sha256(str(message.get('internetMessageId') or message['id']).encode()).hexdigest()
             with db() as connection:
@@ -590,7 +639,8 @@ def run(store, db):
                 prior = connection.execute('SELECT * FROM operations_mail WHERE message_key=?',(key,)).fetchone()
             phase='recording receipt'
             try:
-                if prior and prior['state']=='Imported':
+                if prior and prior['state']=='Imported' and retained_import(store,key,prior['job_key']):
+                    audit(store,sid,key,State='Imported',Detail='Existing job and retained original email verified; duplicate review entry reconciled.',**{'Job Key':prior['job_key']})
                     graph.move_message(token,message['id'],imported)
                     continue
                 audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
@@ -600,7 +650,17 @@ def run(store, db):
                 attachments = formats.enrich_push_parent(token,message,attachments)
                 item = message_item(store,message,attachments)
                 phase='saving job and source files'
-                jobkey = save_message(store,token,message,item,attachments,key,stats,db=db)
+                if key in retry_keys:
+                    # Serialize with a portal reviewer and leave the claim in
+                    # place if a network failure makes the save uncertain.
+                    with db() as connection:
+                        try:
+                            connection.execute('INSERT INTO portal_intake_review VALUES (?,?,?,?)',(key,'Automatic intake reconciliation',datetime.now(timezone.utc).timestamp(),''))
+                        except sqlite3.IntegrityError:
+                            continue
+                # Recovery retains source files and status without sending a
+                # late receipt acknowledgment to the original customer thread.
+                jobkey = save_message(store,token,message,item,attachments,key,stats,db=None if key in retry_keys else db)
                 phase='confirming import'
                 phone=notify_import_assignment(store,jobkey,key)
                 detail='Job and original email saved; existing field status preserved.'
@@ -609,6 +669,8 @@ def run(store, db):
                 audit(store,sid,key,State='Imported',Detail=detail,**{'Job Key':jobkey})
                 with db() as connection:
                     connection.execute('INSERT OR REPLACE INTO operations_mail VALUES (?,?,?)',(key,jobkey,'Imported'))
+                    if key in retry_keys:
+                        connection.execute('UPDATE portal_intake_review SET job_key=? WHERE message_key=?',(jobkey,key))
                 graph.move_message(token,message['id'],imported)
             except ValueError as exc:
                 audit(store,sid,key,State='Needs review',Detail=str(exc))
