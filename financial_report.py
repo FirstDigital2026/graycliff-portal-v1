@@ -34,4 +34,17 @@ def report(db):
                      'rowId':str(source['rowId']),'title':snap.get('draft',{}).get('title',''),
                      'sentAt':row['sent_at'] or '', 'amountCents':cents(pricing.get('amount')),
                      'lines':lines,'source':'Sent billing spreadsheet'})
-    return {'jobs':jobs,'excludedTestSends':excluded,'currency':'USD'}
+    # Retained sent spreadsheets fill historical gaps; accepted portal sends win.
+    with db() as c:
+        exists=c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_spreadsheet_imports'").fetchone()
+        imports=c.execute('SELECT snapshot FROM financial_spreadsheet_imports').fetchall() if exists else []
+    indexed={j['sourceKey']:j for j in jobs}
+    for row in imports:
+        try:item=json.loads(row['snapshot'])
+        except (ValueError,TypeError):continue
+        key=item.get('sourceKey','')
+        if not re.fullmatch(r'\d+:\d+',key) or not isinstance(item.get('amountCents'),int):continue
+        if key in indexed and indexed[key]['amountCents'] is not None:continue
+        safe={k:item[k] for k in ('sourceKey','sheetId','rowId','title','sentAt','amountCents','lines','source','sourceFile','sourceCell','fileSha256') if k in item}
+        indexed[key]=safe
+    return {'jobs':list(indexed.values()),'excludedTestSends':excluded,'currency':'USD'}
