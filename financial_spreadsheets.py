@@ -6,6 +6,10 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 NS={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 TABLE='financial_spreadsheet_imports'
 
+def same_collection(url,root):
+    a,b=urllib.parse.urlparse(url),urllib.parse.urlparse(root)
+    return a.scheme==b.scheme=='https' and a.netloc==b.netloc and urllib.parse.unquote(a.path)==urllib.parse.unquote(b.path)
+
 def initialize(db):
     with db() as c:c.execute(f'''CREATE TABLE IF NOT EXISTS {TABLE} (
         source_key TEXT PRIMARY KEY, snapshot TEXT NOT NULL, imported_at REAL NOT NULL)''')
@@ -105,7 +109,7 @@ def scan(db,store,mailbox,progress=print):
     query=urllib.parse.urlencode({'$search':'"work completed"','$top':100,'$select':'id,subject,from,sentDateTime,receivedDateTime,hasAttachments'})
     token=graph.access_token();url=root+'?'+query;messages=[]
     while url:
-        if not url.startswith(root+'?'):raise ValueError('Unexpected message pagination source')
+        if not same_collection(url,root):raise ValueError('Unexpected message pagination source')
         result=graph._request('GET',url,token=token);messages.extend(result.get('value',[]));url=result.get('@odata.nextLink','')
     candidates={};unmatched=[];errors=[];inspected=0
     for index,m in enumerate(messages):

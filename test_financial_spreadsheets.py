@@ -1,5 +1,5 @@
 import io,zipfile,unittest,json
-from financial_spreadsheets import extract_total,match_job,save_candidates
+from financial_spreadsheets import extract_total,match_job,save_candidates,same_collection
 from test_financial_report import FinancialReportTests
 from financial_report import report
 
@@ -15,6 +15,12 @@ def workbook(total='382.90',formula='SUM(C4:R4)'):
     return out.getvalue()
 
 class ExtractionTests(unittest.TestCase):
+    def test_graph_pagination_decoded_address_is_same_mailbox(self):
+        root='https://graph.microsoft.com/v1.0/users/person%40example.invalid/messages'
+        self.assertTrue(same_collection(root+'?skip=100',root))
+        self.assertTrue(same_collection(root.replace('%40','@')+'?skip=100',root))
+        self.assertFalse(same_collection(root.replace('graph.microsoft.com','evil.invalid'),root))
+        self.assertFalse(same_collection(root.replace('person','other'),root))
     def test_actual_total_range_not_repriced(self):
         r=extract_total(workbook());self.assertEqual(r['amountCents'],38290);self.assertNotIn('MC09',[x['code'] for x in r['lines']]);self.assertTrue(r['sourceCell'].endswith('S4'))
     def test_bad_cache_and_unknown_formula_rejected(self):
