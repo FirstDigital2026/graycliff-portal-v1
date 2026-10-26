@@ -47,6 +47,27 @@ def initialize(db):
           id TEXT PRIMARY KEY,job_key TEXT NOT NULL,state TEXT NOT NULL,
           snapshot TEXT NOT NULL,created_at REAL NOT NULL,sent_at TEXT,detail TEXT)''')
 
+def reviewed_recipients(value):
+    """One billing preview only; never change market defaults or field routing."""
+    if not isinstance(value,dict) or set(value)!={'to','cc'}:
+        raise ValueError('Check the billing To and Cc addresses.')
+    result={}
+    for field in ('to','cc'):
+        entries=value[field]
+        if not isinstance(entries,list) or len(entries)>20:
+            raise ValueError('Use up to 20 billing addresses in each recipient box.')
+        clean=[]
+        for address in entries:
+            if not isinstance(address,str) or not re.fullmatch(r'[A-Za-z0-9.!#$%&\'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}',address):
+                raise ValueError('A billing email address is invalid. Nothing was sent.')
+            address=address.lower()
+            if address==mail.SENDER.lower():raise ValueError('Billing cannot be sent to its own mailbox.')
+            if address not in clean:clean.append(address)
+        result[field]=clean
+    if not result['to']:raise ValueError('Add at least one To recipient for this billing email.')
+    if set(result['to'])&set(result['cc']):raise ValueError('An address is in both To and Cc. Keep it in one box.')
+    return result
+
 def authenticated(raw, headers, secret):
     ts=headers.get('X-FDGC-Time','');sig=headers.get('X-FDGC-Signature','')
     if not secret or not ts.isdigit() or abs(time.time()-int(ts))>300:return False
@@ -295,22 +316,41 @@ def handle(store, db, payload):
               'quantities':quantity_totals(next(f['data'] for f in originals if f['role']=='spreadsheet')),'snapshotVersion':5,'sourceRoute':route}
         with db() as c:c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),time.time(),None,'Prepared only; no email sent.'))
         return {'id':pid,'state':'PREPARED','pricingOnSend':True,'to':d['to'],'cc':d['cc'],'subject':d['subject'],'text':d['text'],'files':snap['deliveryFiles']}
-    if op!='send':raise ValueError('Unknown billing action.')
+    if op not in ('send','recipients'):raise ValueError('Unknown billing action.')
     with db() as c:r=c.execute('SELECT * FROM billing_package_outbox WHERE id=? AND job_key=?',(str(payload.get('id','')),key)).fetchone()
     if not r or r['state']!='PREPARED':raise ValueError('Prepare and review this package before sending.')
     if time.time()-r['created_at']>1800:raise ValueError('The review has expired. Prepare the package again.')
     snap=json.loads(r['snapshot'])
     if snap.get('snapshotVersion')!=5:raise ValueError('Review this package again to confirm the updated billing recipients.')
+    if op=='recipients':
+        recipients=reviewed_recipients(payload.get('recipients'))
+        fresh_job(store,snap['input'])
+        # Keep the verified source route intact for the final send-time check.
+        pid=str(uuid.uuid4())
+        snap['draft']={**snap['draft'],**recipients,'eventId':'billing-'+pid}
+        snap['reviewedRecipients']={**recipients,'actor':str(payload.get('actor','')),'at':mail.now()}
+        with db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            prior=c.execute("SELECT id FROM billing_package_outbox WHERE job_key=? AND state IN ('DISPATCHING','UNCERTAIN','ACCEPTED')",(key,)).fetchone()
+            if prior:raise ValueError('This billing package is already being processed. Refresh before editing recipients.')
+            changed=c.execute("UPDATE billing_package_outbox SET state='REPLACED',detail='Recipient list edited in a newer review.' WHERE id=? AND state='PREPARED' AND snapshot=?",(r['id'],r['snapshot'])).rowcount
+            if changed!=1:raise ValueError('The review changed in another tab. Reload before editing recipients.')
+            c.execute('INSERT INTO billing_package_outbox VALUES(?,?,?,?,?,?,?)',(pid,key,'PREPARED',json.dumps(snap),r['created_at'],None,'Billing recipients reviewed; no email sent.'))
+        return {'id':pid,'state':'PREPARED',**recipients,'message':'Recipients saved for this billing email. Nothing sent.'}
     fresh_job(store,snap['input']);originals=collect(store,snap['input'])
     if [{k:v for k,v in f.items() if k!='data'} for f in originals]!=snap['files']:raise ValueError('An attachment changed. Prepare and review the updated package.')
     files,pricing=package_files(delivery_files(originals,snap['draft']['title']),snap['input'].get('rates'))
     snap['pricing']=pricing;snap['sentFiles']=[{k:v for k,v in f.items() if k!='data'} for f in files]
     # Resolve once more: never silently send to a changed email chain.
     route=billing_route(store,payload)
-    expected=snap['draft']
+    expected=snap.get('sourceRoute',snap['draft'])
     for k in ['to','cc']:
         if route[k]!=expected[k]:raise ValueError('Billing recipients changed. Prepare and review the package again.')
-    if route['messageId']!=expected['parent']:raise ValueError('The source email changed. Prepare the package again.')
+    if route['messageId']!=snap['draft']['parent']:raise ValueError('The source email changed. Prepare the package again.')
+    if snap.get('reviewedRecipients'):
+        reviewed=reviewed_recipients({k:snap['reviewedRecipients'][k] for k in ('to','cc')})
+        if any(reviewed[k]!=snap['draft'][k] for k in ('to','cc')):
+            raise ValueError('Review the updated billing recipients before sending.')
     transport.validate_size(files)
     large=sum(f['size'] for f in files)>transport.DIRECT_BUDGET
     raw=mime_message(snap['draft'],[] if large else files)
