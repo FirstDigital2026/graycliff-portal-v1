@@ -31,6 +31,9 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(match_job('Work Completed Spreadsheet (5033 Erwin Ct).xlsx',jobs)['sourceKey'],'1:1')
         self.assertIsNone(match_job('Work Completed Spreadsheet (5033 Erwin Ct).xlsx',jobs+jobs))
         self.assertIsNone(match_job('Work Completed Spreadsheet (5034 Erwin Ct).xlsx',jobs))
+        self.assertEqual(match_job('Work Completed Spreadsheet OLD RATE (5033 Erwin Ct cell tower).xlsx',jobs)['sourceKey'],'1:1')
+        crq=[{'title':'1314 Jefferson Rd CRQ 158257','sourceKey':'1:2'}]
+        self.assertEqual(match_job('Work Completed Spreadsheet (1314 Jefferson Rd CRQ158257).xlsx',crq)['sourceKey'],'1:2')
 
 class ImportedReportTests(FinancialReportTests):
     def test_import_fills_gap_but_not_accepted_send_and_does_not_leak_mail_ids(self):

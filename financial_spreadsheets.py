@@ -70,12 +70,20 @@ def normalized(value):
     value=str(value).lower().replace('’',"'")
     for a,b in [('street','st'),('road','rd'),('drive','dr'),('highway','hwy'),('court','ct'),('lane','ln'),('boulevard','blvd'),('avenue','ave'),('mount','mt')]:
         value=re.sub(r'\b'+a+r'\b',b,value)
+    value=re.sub(r'\bcrq\s*(\d+)\b',r'crq\1',value)
     return re.sub(r'[^a-z0-9]+',' ',value).strip()
 
 def match_job(filename,jobs):
     name=re.sub(r'\.xlsx$','',filename,flags=re.I)
+    parens=re.search(r'\((.+)\)',name)
+    if parens:name=parens.group(1)
     name=re.sub(r'^work[ _-]*completed(?:[ _-]*spreadsheet)?[ _-]*','',name,flags=re.I)
     name=normalized(name.strip(' ()'))
+    name=re.sub(r'\b(?:cell tower|event)\b','',name).strip()
+    crq=re.search(r'\bcrq\d+\b',name)
+    if crq:
+        exact=[j for j in jobs if crq.group() in normalized(j['title']).split()]
+        if len(exact)==1:return exact[0]
     candidates=[]
     for j in jobs:
         title=normalized(j['title']);parts=[normalized(x) for x in re.split(r'[·|]',j['title'])]
@@ -87,7 +95,9 @@ def save_candidates(db,candidates):
     for key,versions in candidates.items():
         versions.sort(key=lambda x:x['sentAt'],reverse=True)
         amounts={x['amountCents'] for x in versions}
-        if len(amounts)>1 and not re.search(r'\b(revised|corrected|updated|revision)\b',versions[0]['subject'],re.I):conflicts+=1;continue
+        if len(amounts)>1 and not re.search(r'\b(revised|corrected|updated|revision)\b',versions[0]['subject'],re.I):
+            with db() as c:c.execute(f'INSERT OR REPLACE INTO {TABLE} VALUES(?,?,?)',(key,json.dumps({'sourceKey':key,'amountCents':None,'importIssue':'Conflicting sent spreadsheet totals'}),time.time()))
+            conflicts+=1;continue
         record=versions[0];record['versionsFound']=len(versions)
         with db() as c:c.execute(f'INSERT OR REPLACE INTO {TABLE} VALUES(?,?,?)',(key,json.dumps(record),time.time()))
         saved+=1
@@ -102,11 +112,10 @@ def scan(db,store,mailbox,progress=print):
         for row in sheet.get('rows',[]):
             v={cols[c['columnId']]:c.get('value','') for c in row['cells']};title=v.get('Task Name','')
             if not title or v.get('Status')=='Canceled':continue
-            if sh['name']!='Completed Small Projects Graycliff' and v.get('Status')!='Billed':continue
             sid=str(v.get('Portal Billing Source Sheet') or sh['id']);rid=str(v.get('Portal Billing Source Row') or row['id'])
-            jobs.append({'title':title,'sourceKey':sid+':'+rid,'sheetId':sid,'rowId':rid})
+            jobs.append({'title':title,'sourceKey':sid+':'+rid,'sheetId':sid,'rowId':rid,'jobStatus':v.get('Status','')})
     user=urllib.parse.quote(mailbox,safe='');root=graph.GRAPH_ROOT+'/users/'+user+'/messages'
-    query=urllib.parse.urlencode({'$search':'"work completed"','$top':100,'$select':'id,subject,from,sentDateTime,receivedDateTime,hasAttachments'})
+    query=urllib.parse.urlencode({'$search':'"work completed"','$top':100,'$select':'id,subject,from,toRecipients,ccRecipients,sentDateTime,receivedDateTime,hasAttachments'})
     token=graph.access_token();url=root+'?'+query;messages=[]
     while url:
         if not same_collection(url,root):raise ValueError('Unexpected message pagination source')
@@ -115,6 +124,8 @@ def scan(db,store,mailbox,progress=print):
     for index,m in enumerate(messages):
         sender=m.get('from',{}).get('emailAddress',{}).get('address','').lower()
         if not sender.endswith('@firstdigitalsc.com') or re.search(r'\bTEST ONLY\b',m['subject'],re.I) or not m.get('hasAttachments'):continue
+        recipients=(m.get('toRecipients') or [])+(m.get('ccRecipients') or [])
+        if not any(x.get('emailAddress',{}).get('address','').lower().endswith('@graycliffent.com') for x in recipients):continue
         mid=urllib.parse.quote(m['id'],safe='');attachroot=root+'/'+mid+'/attachments'
         attachments=graph._request('GET',attachroot+'?$top=100&$select=id,name,size,isInline',token=token).get('value',[])
         for a in attachments:
@@ -130,7 +141,13 @@ def scan(db,store,mailbox,progress=print):
                 candidates.setdefault(job['sourceKey'],[]).append(record);inspected+=1
             except Exception as e:errors.append({'file':a['name'],'reason':str(e)[:180]})
         if index%20==0:progress(json.dumps({'messagesChecked':index+1,'messagesFound':len(messages),'matchedJobs':len(candidates)}),flush=True)
-    result=save_candidates(db,candidates);result.update({'messagesFound':len(messages),'inspectedFiles':inspected,'unmatchedFiles':sorted(set(unmatched)),'errors':errors})
+    result=save_candidates(db,candidates)
+    if not errors:
+        with db() as c:
+            old=c.execute(f'SELECT source_key FROM {TABLE}').fetchall()
+            for row in old:
+                if row['source_key'] not in candidates:c.execute(f'DELETE FROM {TABLE} WHERE source_key=?',(row['source_key'],))
+    result.update({'messagesFound':len(messages),'inspectedFiles':inspected,'unmatchedFiles':sorted(set(unmatched)),'errors':errors})
     progress(json.dumps(result),flush=True);return result
 
 if __name__=='__main__':
