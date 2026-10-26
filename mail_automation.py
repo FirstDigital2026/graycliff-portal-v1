@@ -154,6 +154,10 @@ def resolve_thread(store,token,e):
             if parent and external(parent):return validate_route(parent)
     raise ThreadReview('Forwarded intake email could not be linked to a unique original customer message. No recipients guessed.')
 
+def resolve_field_thread(store,token,e):
+    from field_thread import resolve
+    return resolve(store,token,e,resolve_thread(store,token,e))
+
 def draft_event(e,route):
     job=e.get('job',{});complete=e['status']=='Field complete'
     outage=job.get('type')=='Outage'
@@ -333,7 +337,7 @@ def prepare(store,db):
         for row in pending:
             e=json.loads(row['payload'])
             try:
-                token=token or graph.access_token();route=resolve_thread(store,token,e);draft=draft_event(e,route)
+                token=token or graph.access_token();route=resolve_field_thread(store,token,e);draft=draft_event(e,route)
                 draft=completion_photos.attach(draft,e,store,bridge,ThreadReview) if e.get('status')=='Field complete' else attach_update_photos(draft,e,store)
                 # Future activation applies only to new events after an explicit
                 # activation timestamp. Existing PAUSED drafts never auto-release.
