@@ -294,7 +294,11 @@ def receipt(row):
 
 def handle(store, db, payload):
     if payload.get('testTo'):raise ValueError('Test sending has been removed. Reload the billing screen before continuing.')
-    initialize(db);key=str(payload['sheetId'])+':'+str(payload['rowId']);op=payload.get('op')
+    initialize(db);op=payload.get('op')
+    if op=='financials':
+        from financial_report import report
+        return report(db)
+    key=str(payload['sheetId'])+':'+str(payload['rowId'])
     if op=='review_pricing':raise ValueError('Billing review shows unpriced files. Prices are added only when sending.')
     with db() as c:
         accepted=c.execute("SELECT * FROM billing_package_outbox WHERE job_key=? AND state IN ('ACCEPTED','UNCERTAIN','DISPATCHING') ORDER BY created_at DESC LIMIT 1",(key,)).fetchone()
