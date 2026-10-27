@@ -304,7 +304,8 @@ def report(db):
     drafts=[]
     for r in rows:
         d=json.loads(r['draft']) if r['draft'] else {}
-        drafts.append({'jobKey':r['job_key'],'title':d.get('title',r['job_key']),'state':r['state'],
+        event=json.loads(r['payload'])
+        drafts.append({'jobKey':r['job_key'],'title':d.get('title') or event.get('job',{}).get('title') or r['job_key'],'state':r['state'],
             'subject':d.get('subject',''),'recipients':d.get('to',[])+d.get('cc',[]),'text':d.get('text',''),'detail':r['detail']})
     live=bool(SEND_ARMED and policy and policy[0])
     return {'sending':'LIVE' if live else 'PAUSED','checkedAt':now(),'counts':counts,'drafts':drafts,'backup':json.loads(backup[0]) if backup else None,
