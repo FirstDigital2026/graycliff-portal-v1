@@ -95,6 +95,13 @@ def resolve(store, token, event, base):
     originals = [(at, route) for at, route in candidates if not forwarded(route['subject'])
                  and any(not address.endswith('@firstdigitalsc.com') for address in route['from'])]
     if not originals:
+        # Assignments are often forwarded by Graycliff. Their actual incoming
+        # Graph message is the received customer chain, even with an FW subject.
+        # Keep exact conversation/subject verification and header-only routing.
+        originals = [(at, route) for at, route in candidates
+                     if any(address.endswith(('@graycliffent.com', '@spectrum.com', '@charter.com'))
+                            for address in route['from'])]
+    if not originals:
         raise mail.ThreadReview('The verified conversation has no original customer-chain message. Review recipients.')
     # Keep the original reply chain, while retaining all human participants from
     # that exact conversation, including colleagues who forwarded the assignment.

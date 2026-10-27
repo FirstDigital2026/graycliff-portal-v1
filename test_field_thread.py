@@ -65,6 +65,23 @@ class FieldThreadTests(unittest.TestCase):
         with self.assertRaises(mail.ThreadReview):
             self.resolve([self.rows[1]])
 
+    def test_verified_customer_forward_is_a_valid_received_chain(self):
+        rows = [message('incoming', 'manager@graycliffent.com',
+                        ['office@firstdigitalsc.com', 'lead@firstdigitalsc.com'],
+                        ['coordinator@spectrum.com'], subject='FW: [EXTERNAL] Test outage'),
+                message('internal', 'office@firstdigitalsc.com', [mail.SENDER],
+                        subject='RE: FW: [EXTERNAL] Test outage')]
+        route = self.resolve(rows)
+        self.assertEqual(route['messageId'], '<incoming@example.com>')
+        self.assertIn('manager@graycliffent.com', route['to'] + route['cc'])
+        self.assertIn('coordinator@spectrum.com', route['to'] + route['cc'])
+        self.assertNotIn('body-only@example.net', route['to'] + route['cc'])
+
+    def test_other_job_customer_forward_never_becomes_anchor(self):
+        with self.assertRaises(mail.ThreadReview):
+            self.resolve([message('other', 'manager@graycliffent.com',
+                                  ['office@firstdigitalsc.com'], subject='FW: Another job')])
+
     def test_unverified_source_holds(self):
         with patch.object(field, 'exact_record', return_value=None):
             with self.assertRaises(mail.ThreadReview):

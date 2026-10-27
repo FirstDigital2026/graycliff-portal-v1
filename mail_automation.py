@@ -300,7 +300,7 @@ def report(db):
         policy=c.execute("SELECT value FROM mail_bridge_meta WHERE key='live_after'").fetchone()
         backup=c.execute("SELECT value FROM mail_bridge_meta WHERE key='backup_result'").fetchone()
         counts={r['state']:r['n'] for r in c.execute('SELECT state,count(*) n FROM mail_event_outbox GROUP BY state')}
-        rows=c.execute("SELECT * FROM mail_event_outbox WHERE state!='NOT_REQUIRED' ORDER BY seq DESC LIMIT 15").fetchall()
+        rows=c.execute("SELECT * FROM mail_event_outbox WHERE state!='NOT_REQUIRED' ORDER BY CASE WHEN state IN ('NEEDS_THREAD_REVIEW','NEEDS_ATTENTION','UNCERTAIN','UNCERTAIN_SOURCE') THEN 0 ELSE 1 END,seq DESC LIMIT 50").fetchall()
     drafts=[]
     for r in rows:
         d=json.loads(r['draft']) if r['draft'] else {}
