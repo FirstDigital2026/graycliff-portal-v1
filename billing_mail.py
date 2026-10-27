@@ -91,8 +91,10 @@ def collect(store, payload):
     selected=payload.get('files',{})
     if not isinstance(selected,dict):raise ValueError('Select the billing documents.')
     selected=dict(selected)
-    roles=['spreadsheet','map']+(['workbook'] if payload.get('workbookRequired') else [])
-    if selected.get('workbook') and 'workbook' not in roles:roles.append('workbook')
+    no_workbook=payload.get('workbookNotNeeded') is True
+    if no_workbook:selected.pop('workbook',None)
+    roles=['spreadsheet','map']+(['workbook'] if payload.get('workbookRequired') and not no_workbook else [])
+    if selected.get('workbook') and not no_workbook and 'workbook' not in roles:roles.append('workbook')
     if not payload.get('workbookRequired') and not payload.get('workbookNotNeeded'):
         raise ValueError('Include the workbook or confirm it is not needed for this job.')
     supporting=selected.pop('supporting',[])

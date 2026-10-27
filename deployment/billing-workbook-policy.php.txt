@@ -1,0 +1,17 @@
+WordPress snippet 2887: explicit no-workbook selection takes precedence.
+
+builder_package_save, after validating selections:
+if(($_POST['workbookNotNeeded']??'')==='1')$package['workbook']='';
+$package['workbookNotNeeded']=$package['workbook']===''&&($_POST['workbookNotNeeded']??'')==='1';
+
+builder_prepare, before falling back to a generated workbook:
+$workbookNotNeeded=($_POST['workbookNotNeeded']??'')==='1';
+if($workbookNotNeeded)$files['workbook']='';
+$readyWorkbook=$saved['files']['workbook']??[];
+if(!$workbookNotNeeded&&$files['workbook']===''&&!empty($readyWorkbook['id'])){
+    // Keep existing revision/version validation before using this generated file.
+    $files['workbook']=(string)$readyWorkbook['id'];
+}
+
+The already assembled local builder-finance.php contains the complete change,
+including photo-first date read and ordinary revision-checked draft saving.
