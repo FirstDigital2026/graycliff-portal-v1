@@ -34,6 +34,13 @@ class FinancialReportTests(unittest.TestCase):
         for value in (None,True,'NaN','Infinity',-1,'not money'):self.assertIsNone(cents(value))
     def test_dispatcher_report_needs_no_job_and_never_dispatches(self):
         self.add();result=billing.handle(object(),self.db,{'op':'financials'});self.assertEqual(len(result['jobs']),1)
+    def test_verified_on_call_classification_retained_without_delivery_contacts(self):
+        from financial_spreadsheets import initialize
+        initialize(self.db)
+        item={'sourceKey':'123:456','amountCents':53900,'onCall':True,'classificationBasis':'Original October on-call recap','to':['private@example.invalid']}
+        with self.db() as c:c.execute('INSERT INTO financial_spreadsheet_imports VALUES(?,?,?)',('123:456',json.dumps(item),1))
+        row=report(self.db)['jobs'][0]
+        self.assertTrue(row['onCall']);self.assertEqual(row['amountCents'],53900);self.assertNotIn('to',row)
 
 
 if __name__=='__main__':unittest.main()
