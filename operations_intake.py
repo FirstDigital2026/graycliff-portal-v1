@@ -650,6 +650,14 @@ def run(store, db):
                 # Graph's hasAttachments flag is false for messages containing only inline pictures.
                 attachments = graph.list_attachments(token,message['id'],inline_content=False)
                 attachments = formats.enrich_push_parent(token,message,attachments)
+                from billing_recaps import candidate as is_recap, ingest as ingest_recap
+                if is_recap(message,attachments):
+                    phase='reconciling billing recap'
+                    recap=ingest_recap(store,db,message,attachments,key,token,sid)
+                    audit(store,sid,key,State=recap['state'],Detail=recap['detail'])
+                    graph.move_message(token,message['id'],review if recap['state']=='Needs review' else imported)
+                    stats['recaps']=stats.get('recaps',0)+1
+                    continue
                 item = message_item(store,message,attachments)
                 phase='saving job and source files'
                 if key in retry_keys:
@@ -686,6 +694,9 @@ def run(store, db):
                 audit(store,sid,key,Subject=message.get('subject',''),State='Import failed',Detail=f'Failed while {phase}. {diagnostic}. Check any partially saved job before retrying.',**{'Received At':message.get('receivedDateTime','')})
                 graph.move_message(token,message['id'],failed)
                 stats['failed'] += 1
+        # Refresh comparisons after new sends, even on an otherwise empty inbox.
+        from billing_recaps import sync_sheet as sync_recap_sheet
+        sync_recap_sheet(store,db)
         audit(store,sid,'SYSTEM',Subject='Graycliff mailbox connection',State='Connected',Detail='Inbox checked. '+json.dumps(stats))
         return {'ok':True,'configured':True,**stats,'message':'Mailbox intake checked the operational area sheets.'}
     except Exception:
