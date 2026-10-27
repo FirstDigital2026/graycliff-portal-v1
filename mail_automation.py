@@ -295,6 +295,27 @@ def backup_check(db):
         if not ok:raise RuntimeError('Database restore check failed.')
         return {'ok':True,'detail':'Daily database backup and isolated restore integrity check passed.','at':now()}
 
+def supersede_delivered_completion(db):
+    """A delivered completion replaces earlier unsent progress failures only.
+
+    Preserve uncertain sends and errors for reopened/later or different incidents.
+    Nothing here creates or releases a message.
+    """
+    with db() as c:
+        delivered=c.execute("SELECT event_id,job_key,seq,payload FROM mail_event_outbox WHERE state='ACCEPTED' AND sent_at IS NOT NULL ORDER BY seq DESC").fetchall()
+        count=0
+        for complete in delivered:
+            event=json.loads(complete['payload'])
+            if event.get('status')!='Field complete':continue
+            incident=event.get('job',{}).get('incidentId','')
+            older=c.execute("SELECT event_id,payload FROM mail_event_outbox WHERE job_key=? AND seq<? AND state IN ('NEEDS_THREAD_REVIEW','NEEDS_ATTENTION') AND sent_at IS NULL",(complete['job_key'],complete['seq'])).fetchall()
+            for row in older:
+                prior=json.loads(row['payload'])
+                if prior.get('status') not in {'Today','En route','On site','Working','On hold'}:continue
+                if prior.get('job',{}).get('incidentId','')!=incident:continue
+                count+=c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail=? WHERE event_id=? AND state IN ('NEEDS_THREAD_REVIEW','NEEDS_ATTENTION') AND sent_at IS NULL",('Earlier progress update replaced by delivered completion event '+complete['event_id']+'. No duplicate email sent.',row['event_id'])).rowcount
+        return count
+
 def report(db):
     with db() as c:
         policy=c.execute("SELECT value FROM mail_bridge_meta WHERE key='live_after'").fetchone()
@@ -352,6 +373,7 @@ def prepare(store,db):
                 with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_THREAD_REVIEW',detail=? WHERE event_id=? AND state NOT IN ('ACCEPTED','DISPATCHING','UNCERTAIN','SUPERSEDED')",(str(ex),e['eventId']))
             except Exception:
                 with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_ATTENTION',prepared_at=?,detail='Preparation needs attention; no automatic retry of uncertain sends.' WHERE event_id=? AND state NOT IN ('UNCERTAIN','DISPATCHING','ACCEPTED')",(now(),e['eventId']))
+        supersede_delivered_completion(db)
         result=report(db)
         with db() as c:last=c.execute("SELECT value FROM mail_bridge_meta WHERE key='backup_checked'").fetchone()
         if not last or last[0][:10]!=now()[:10]:
