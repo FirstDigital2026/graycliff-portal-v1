@@ -882,6 +882,9 @@ def create_field_job(values: dict[str, Any]) -> dict[str, Any]:
 
 def import_graycliff_mailbox() -> dict[str, Any]:
     from operations_intake import run
+    if os.getenv('RENDER_SERVICE_ID','')=='srv-d9p0jflbedkc73ds5tn0':
+        from kinetic_finance import kick
+        kick(db)
     return run(store, db)
 
 

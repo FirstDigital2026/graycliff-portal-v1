@@ -1,5 +1,7 @@
 """Private commercial intake. No operational rows, customer emails or sent amounts change."""
-import base64,hashlib,io,json,re,urllib.parse,os
+import base64,hashlib,io,json,re,urllib.parse,os,threading,time
+from email import policy
+from email.parser import BytesParser
 from datetime import date,datetime,timezone
 from decimal import Decimal,ROUND_HALF_UP
 from pathlib import Path
@@ -10,6 +12,7 @@ RATES=json.loads(RATE_PATH.read_text()) if RATE_PATH.exists() else {'revenue':{}
 def norm(code):return re.sub(r'\s+','',str(code).upper()).replace('"','IN')
 REV={norm(k):v for k,v in RATES['revenue'].items()}
 COST={norm(k):v for k,v in RATES['costs'].items()}
+PROCESSING=threading.Lock()
 def money(v):return int((Decimal(str(v).replace(',',''))*100).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
 def now():return datetime.now(timezone.utc).isoformat()
 def initialize(db):
@@ -17,6 +20,7 @@ def initialize(db):
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_documents (digest TEXT PRIMARY KEY, kind TEXT, snapshot TEXT NOT NULL, created_at TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_messages (message_key TEXT PRIMARY KEY, mime BLOB NOT NULL, mime_hash TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL)')
+        c.execute('CREATE TABLE IF NOT EXISTS private_commercial_jobs (message_key TEXT PRIMARY KEY,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,last_attempt REAL NOT NULL DEFAULT 0)')
 def candidate(message,attachments):
     subject=message.get('subject') or ''
     if re.search(r'remittance\s*(?:-\s*)?advice',subject,re.I):return True
@@ -114,26 +118,20 @@ def ingest(db,message,attachments,key,token):
     digest=hashlib.sha256(raw).hexdigest()
     with db() as c:
         c.execute('INSERT OR IGNORE INTO private_commercial_messages VALUES (?,?,?,?,?,?)',(key,raw,digest,'Retained','Private original retained; parsing pending',now()))
-    count=0;verified=True
-    for a in attachments:
-        f=graph.attachment_bytes(a)
-        if not f:continue
-        filename,mime,data=f
-        if not filename.lower().endswith('.pdf'):continue
-        count+=1
-        try:
-            reader=PdfReader(io.BytesIO(data))
-            if len(reader.pages)>100:raise ValueError('PDF exceeds 100-page review limit')
-            text='\n'.join(p.extract_text() or '' for p in reader.pages)
-        except Exception:
-            # Retain encrypted, damaged and oversized PDFs as visible review
-            # items instead of losing the packet or marking a retry imported.
-            text=''
-        verified=save_text(db,text,filename,hashlib.sha256(data).hexdigest(),{'receivedAt':message.get('receivedDateTime',''),'messageKey':key}) and verified
-    state='Imported' if count and verified else 'Needs review'
-    with db() as c:c.execute('UPDATE private_commercial_messages SET state=?, detail=? WHERE message_key=?',(state,'Private source retained and commercial analysis updated' if state=='Imported' else 'Private source retained; document requires owner review',key))
+    # The durable complete MIME is the source of truth. OCR runs independently,
+    # so a slow scan never blocks archiving the next shared forwarded copy.
+    with db() as c:
+        c.execute("INSERT OR IGNORE INTO private_commercial_jobs (message_key,state) VALUES (?,'Queued')",(key,))
+        saved=c.execute('SELECT mime,mime_hash FROM private_commercial_messages WHERE message_key=?',(key,)).fetchone()
+    if not saved or hashlib.sha256(saved['mime']).hexdigest()!=saved['mime_hash']:raise RuntimeError('Private retention verification failed')
+    retained=BytesParser(policy=policy.default).parsebytes(saved['mime'])
+    pdfs={str(p.get_filename() or '').casefold():p.get_payload(decode=True) for p in retained.walk() if str(p.get_filename() or '').lower().endswith('.pdf')}
+    expected=[str(a.get('name')).casefold() for a in attachments if str(a.get('name') or '').lower().endswith('.pdf')]
+    if not pdfs or any(not pdfs.get(name) for name in expected):raise RuntimeError('Complete PDF retention could not be verified')
+    state='Archived; automatic processing queued'
+    with db() as c:c.execute('UPDATE private_commercial_messages SET state=?, detail=? WHERE message_key=?',(state,'Complete original email and attachments verified privately; automatic reading queued',key))
     with db() as c:cleanup=c.execute("SELECT value FROM private_commercial_settings WHERE name='cleanup_enabled'").fetchone()
-    if state=='Imported' and sender=='thomas.bramlette@firstdigitalsc.com' and cleanup and cleanup['value']=='yes':
+    if sender=='thomas.bramlette@firstdigitalsc.com' and cleanup and cleanup['value']=='yes':
         # Verify durable private bytes before removing the shared forwarded copy.
         with db() as c:saved=c.execute('SELECT mime,mime_hash FROM private_commercial_messages WHERE message_key=?',(key,)).fetchone()
         if not saved or hashlib.sha256(saved['mime']).hexdigest()!=saved['mime_hash']:raise RuntimeError('Private retention verification failed')
@@ -141,11 +139,72 @@ def ingest(db,message,attachments,key,token):
         root=graph.GRAPH_ROOT+'/users/'+urllib.parse.quote(graph.mailbox(),safe='')+'/messages/'+urllib.parse.quote(message['id'],safe='')
         try:
             graph._request('POST',root+'/permanentDelete',token=token)
-            with db() as c:c.execute("UPDATE private_commercial_messages SET state='Imported and removed' WHERE message_key=?",(key,))
+            with db() as c:c.execute("UPDATE private_commercial_messages SET state='Private processing; shared copy removed' WHERE message_key=?",(key,))
         except Exception:
             with db() as c:c.execute("UPDATE private_commercial_messages SET detail='Import verified; shared copy removal requires attention' WHERE message_key=?",(key,))
-            return {'state':'Removal needs attention','detail':'Private import verified; shared copy remains.'}
+            kick(db)
+            return {'state':'Removal needs attention','detail':'Private source verified; shared copy removal will retry.'}
+    kick(db)
     return {'state':state,'detail':'Commercial document retained privately.'}
+
+def process_private_message(db,key):
+    with db() as c:row=c.execute('SELECT mime,mime_hash,state FROM private_commercial_messages WHERE message_key=?',(key,)).fetchone()
+    if not row or hashlib.sha256(row['mime']).hexdigest()!=row['mime_hash']:raise ValueError('Private original integrity check failed')
+    message=BytesParser(policy=policy.default).parsebytes(row['mime']);count=0;verified=True
+    for part in message.walk():
+        filename=str(part.get_filename() or '')
+        if not filename.lower().endswith('.pdf'):continue
+        count+=1;data=part.get_payload(decode=True)
+        if not data:raise ValueError('Retained PDF attachment is empty')
+        digest=hashlib.sha256(data).hexdigest()
+        with db() as c:prior=c.execute('SELECT kind FROM private_commercial_documents WHERE digest=?',(digest,)).fetchone()
+        if prior and prior['kind']!='review':continue
+        try:
+            reader=PdfReader(io.BytesIO(data))
+            if len(reader.pages)>100:raise ValueError('PDF page limit exceeded')
+            text='\n'.join(p.extract_text() or '' for p in reader.pages)
+        except Exception:text=''
+        source={'privateMessageKey':key}
+        if text.strip() and save_text(db,text,filename,digest,source):continue
+        try:
+            from commercial_scan import read_pdf
+            doc,pages=read_pdf(data)
+            doc.update(filename=filename,digest=digest,source=source)
+            doc['source']['verification']='Automatic local OCR; recognized quantities, extended amounts, billing codes and printed total reconcile'
+            with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET kind=excluded.kind,snapshot=excluded.snapshot WHERE private_commercial_documents.kind=\'review\'',(digest,doc['kind'],json.dumps(doc),now()))
+        except Exception:
+            verified=False
+            doc={'kind':'review','classificationPending':True,'filename':filename,'digest':digest,'source':source,'reason':'Automatic reading is retrying privately; original email and attachment are safely archived','text':text}
+            with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET snapshot=excluded.snapshot WHERE private_commercial_documents.kind=\'review\'',(digest,'review',json.dumps(doc),now()))
+    state='Processed privately' if count and verified else 'Private reading retry'
+    if 'shared copy removed' in row['state']:state+='; shared copy removed'
+    with db() as c:c.execute('UPDATE private_commercial_messages SET state=?,detail=? WHERE message_key=?',(state,'Complete original preserved privately; '+('all PDFs reconciled' if count and verified else 'automatic reading requires another private attempt'),key))
+    return bool(count and verified)
+
+def process_pending(db):
+    initialize(db)
+    with db() as c:keys=[r['message_key'] for r in c.execute("SELECT message_key FROM private_commercial_jobs WHERE state IN ('Queued','Retry') AND attempts<3 AND last_attempt<? ORDER BY last_attempt",(time.time()-300,))]
+    for key in keys:
+        with db() as c:c.execute("UPDATE private_commercial_jobs SET state='Reading',attempts=attempts+1,last_attempt=? WHERE message_key=?",(time.time(),key))
+        try:ok=process_private_message(db,key)
+        except Exception:ok=False
+        with db() as c:
+            c.execute('UPDATE private_commercial_jobs SET state=? WHERE message_key=?',('Complete' if ok else 'Retry',key))
+            job=c.execute('SELECT attempts FROM private_commercial_jobs WHERE message_key=?',(key,)).fetchone()
+            if not ok and job['attempts']>=3:
+                c.execute("UPDATE private_commercial_messages SET detail='Original safely archived privately; automatic reading could not reconcile after three attempts' WHERE message_key=?",(key,))
+
+def kick(db):
+    if not PROCESSING.acquire(blocking=False):return
+    def worker():
+        try:
+            # Recover a job interrupted by a service restart without replaying
+            # any shared-mailbox mutation.
+            initialize(db)
+            with db() as c:c.execute("UPDATE private_commercial_jobs SET state='Retry' WHERE state='Reading' AND last_attempt<?",(time.time()-900,))
+            process_pending(db)
+        finally:PROCESSING.release()
+    threading.Thread(target=worker,name='private-commercial-ocr',daemon=True).start()
 def report(db):
     initialize(db)
     with db() as c:
