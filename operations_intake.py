@@ -640,16 +640,26 @@ def run(store, db):
                 connection.execute('CREATE TABLE IF NOT EXISTS operations_mail (message_key TEXT PRIMARY KEY, job_key TEXT, state TEXT)')
                 prior = connection.execute('SELECT * FROM operations_mail WHERE message_key=?',(key,)).fetchone()
             phase='recording receipt'
+            private_commercial=False
             try:
                 if prior and prior['state']=='Imported' and retained_import(store,key,prior['job_key']):
                     audit(store,sid,key,State='Imported',Detail='Existing job and retained original email verified; duplicate review entry reconciled.',**{'Job Key':prior['job_key']})
                     graph.move_message(token,message['id'],imported)
                     continue
-                audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
                 phase='reading documents'
                 # Graph's hasAttachments flag is false for messages containing only inline pictures.
                 attachments = graph.list_attachments(token,message['id'],inline_content=False)
                 attachments = formats.enrich_push_parent(token,message,attachments)
+                from kinetic_finance import candidate as is_commercial, ingest as ingest_commercial
+                if is_commercial(message,attachments):
+                    private_commercial=True
+                    phase='saving private commercial evidence'
+                    result=ingest_commercial(db,message,attachments,key,token)
+                    stats['commercial']=stats.get('commercial',0)+1
+                    # Commercial sources never become operational job files or
+                    # shared intake attachments. Failed/review copies stay put.
+                    continue
+                audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
                 from billing_recaps import candidate as is_recap, ingest as ingest_recap
                 if is_recap(message,attachments):
                     phase='reconciling billing recap'
@@ -683,10 +693,16 @@ def run(store, db):
                         connection.execute('UPDATE portal_intake_review SET job_key=? WHERE message_key=?',(jobkey,key))
                 graph.move_message(token,message['id'],imported)
             except ValueError as exc:
+                if private_commercial:
+                    stats['failed']+=1
+                    continue
                 audit(store,sid,key,State='Needs review',Detail=str(exc))
                 graph.move_message(token,message['id'],review)
                 stats['ignored'] += 1
             except Exception as exc:
+                if private_commercial:
+                    stats['failed']+=1
+                    continue
                 # Do not record provider payloads, credentials or private HTTP data.
                 diagnostic=type(exc).__name__
                 if diagnostic=='SmartsheetError':

@@ -297,6 +297,9 @@ def receipt(row):
 def handle(store, db, payload):
     if payload.get('testTo'):raise ValueError('Test sending has been removed. Reload the billing screen before continuing.')
     initialize(db);op=payload.get('op')
+    if op=='kinetic_financials':
+        from kinetic_finance import report
+        return report(db)
     if op=='financials':
         from financial_report import report
         from billing_recaps import report as recap_report
