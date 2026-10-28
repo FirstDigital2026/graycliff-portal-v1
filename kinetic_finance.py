@@ -24,9 +24,12 @@ def candidate(message,attachments):
         if re.search(r'Week Ending:',text,re.I) and any(norm(line.split()[0]) in REV for line in text.splitlines() if line.split()):return True
     return False
 def invoice(text):
+    if re.search(r'Payroll Recaps',text,re.I):return recap(text)
     if not re.search(r'First\s+Digital',text,re.I) or not re.search(r'Graycliff',text,re.I):raise ValueError('Contractor or payer not verified')
     week=re.search(r'Week Ending:\s*(\d+)/(\d+)/(\d+)',text,re.I)
-    project=re.search(r'Job\s*#\s*:\s*([A-Z0-9]+)',text,re.I)
+    project=re.search(r'Job[ \t]*#[ \t]*:[ \t]*([A-Z0-9]+)',text,re.I)
+    if not project:
+        project=re.search(r'(?m)^[ \t]*(\d{3}[A-Z][A-Z0-9]{3,})[ \t]*$',text)
     total=re.findall(r'(?m)^\s*Total:\s*\$([\d,]+\.\d{2})',text)
     if not week or not project or len(total)!=1:raise ValueError('Invoice identity or total needs review')
     m,d,y=map(int,week.groups()); week=date(y,m,d).isoformat(); lines=[]; unmatched=[]
@@ -46,13 +49,32 @@ def invoice(text):
         lines.append({'code':key,'codeCandidates':candidates,'quantity':str(q),'amountCents':actual,'rateCents':money(rate),'rateCardAmountCents':expected,'subCostEstimateCents':estimate,'subRateCents':money(cost['rate']) if cost else None,'description':description})
     if not lines or unmatched or sum(x['amountCents'] for x in lines)!=money(total[0]):raise ValueError('Invoice codes or signed total need review; no totals assumed')
     return {'kind':'invoice','business':'Kinetic','projectCode':project.group(1).upper(),'week':week,'amountCents':money(total[0]),'lines':lines}
+def recap(text):
+    if not re.search(r'First\s+Digital',text,re.I):raise ValueError('Contractor not verified')
+    weeks=set(re.findall(r'Week Ending:\s*(\d+)/(\d+)/(\d+)',text,re.I))
+    codes=set(re.findall(r'(?m)^\s*(\d{3}-[A-Z0-9]+)\s*$',text))
+    totals=re.findall(r'(?m)^\s*Sub\s+\$([\d,]+\.\d{2})',text)
+    if len(weeks)!=1 or len(codes)!=1 or len(totals)!=1:raise ValueError('Recap identity or total needs review')
+    m,d,y=map(int,next(iter(weeks)));lines=[]
+    text=re.sub(r'\n[ \t]*DEPTH[ \t]*\n',' DEPTH ',text)
+    for prefix,amount,qty,location in re.findall(r'(?m)^(.+?)\s+(\(?\$[\d,]+\.\d{2}\)?)(-?[\d.]+)100\.00%(.+)$',text):
+        compact=norm(prefix);matches=[key for key in REV if compact.startswith(key)]
+        if not matches:raise ValueError('Recap includes an unrecognized work code')
+        longest=max(map(len,matches));matches=[key for key in matches if len(key)==longest]
+        if len(matches)!=1:raise ValueError('Recap code is ambiguous')
+        key=matches[0];q=Decimal(qty);actual=money(re.sub(r'[\$()]','',amount))*(-1 if '(' in amount else 1);cost=COST.get(key)
+        lines.append({'code':key,'codeCandidates':[key],'quantity':str(q),'amountCents':actual,'rateCardAmountCents':money(q*Decimal(REV[key]['rate'])),'subCostEstimateCents':money(q*Decimal(cost['rate'])) if cost else None,'description':prefix,'location':location})
+    if not lines or sum(l['amountCents'] for l in lines)!=money(totals[0]):raise ValueError('Recap signed detail total does not reconcile')
+    return {'kind':'invoice','sourceType':'recap','business':'Kinetic','projectCode':next(iter(codes)).replace('-',''),'week':date(y,m,d).isoformat(),'amountCents':money(totals[0]),'lines':lines}
 def remittance(text):
     if not re.search(r'First\s+Digital',text,re.I) or not re.search(r'Graycliff',text,re.I):raise ValueError('Payee or payer not verified')
     payment=re.search(r'(?m)^\s*(E\d+)\s*$',text)
-    projects=re.findall(r'(?m)^\s*(\d{3}[A-Z0-9]{4,})\s*$',text)
-    amounts=re.findall(r'(?m)^\s*0\.00\s+(-?[\d,]+\.\d{2})\s+0\.00\s*$',text)
     page=text.split('Electronic Payment')[0]
-    refs=re.findall(r'(?m)^\s*((?:CB\s+)?[A-Z]+-\d{6})\s*$',page)
+    triples=list(re.finditer(r'\b0\.00[ \t]+(-?[\d,]+\.\d{2})[ \t]+0\.00\b',page))
+    projects=re.findall(r'\b(\d{3}[A-Z0-9]{4,})\b',page[payment.end():triples[0].start()]) if payment and triples else []
+    amounts=[m.group(1) for m in triples]
+    refs=[line.strip() for line in page[triples[-1].end():].splitlines() if line.strip()] if triples else []
+    if any(not re.fullmatch(r'(?:CB\s+)?[A-Z0-9]+(?:[- /]\d+)?',r,re.I) for r in refs):raise ValueError('Remittance references need review')
     dates=re.findall(r'(?m)^\s*(\d{1,2}/\d{1,2}/\d{2,4})\s*$',text)
     total=re.search(r'Payment Totals\s+0\.00\s+\d{1,2}/\d{1,2}/\d{2,4}\s+([\s\S]+?)Inv\. Date',text)
     if not payment or not projects or len(projects)!=len(amounts) or len(refs)!=len(projects) or not dates or not total:raise ValueError('Remittance row mapping needs review')
@@ -126,9 +148,12 @@ def report(db):
     # Same job/week invoice revisions are review items, never additive revenue.
     grouped={}
     for d in invoices:grouped.setdefault((d['projectCode'],d['week']),[]).append(d)
-    unique=[v[0] for v in grouped.values() if len(v)==1]
+    unique=[]
+    for key,versions in grouped.items():
+        if len({v['amountCents'] for v in versions})==1:
+            unique.append(sorted(versions,key=lambda v:(v.get('sourceType')=='recap',len(v['lines'])),reverse=True)[0])
     review=[{'filename':d['filename'],'reason':d['reason']} for d in docs if d['kind']=='review' and (any(code in d.get('text','') for code in known) or any(norm(line.split()[0]) in REV for line in d.get('text','').splitlines() if line.split()))]
-    review += [{'filename':v[0]['filename'],'reason':'Multiple invoice versions for '+str(key)} for key,v in grouped.items() if len(v)>1]
+    review += [{'filename':v[0]['filename'],'reason':'Conflicting invoice versions for '+str(key)} for key,v in grouped.items() if len({d['amountCents'] for d in v})>1]
     review += [{'filename':str(key),'reason':'Conflicting remittance amounts; payment excluded'} for key in conflicts]
     return {'archive':archive,'invoices':unique,'receipts':receipts,'review':review, 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':sum(d['amountCents'] for d in unique),'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Customer invoice amounts and cash receipts are separate. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
 
