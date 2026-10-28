@@ -21,6 +21,14 @@ def initialize(db):
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_messages (message_key TEXT PRIMARY KEY, mime BLOB NOT NULL, mime_hash TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_jobs (message_key TEXT PRIMARY KEY,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,last_attempt REAL NOT NULL DEFAULT 0)')
+        revision=c.execute("SELECT value FROM private_commercial_settings WHERE name='parser_revision'").fetchone()
+        if not revision or revision['value']!='full-recap-codes-v1':
+            c.execute("UPDATE private_commercial_jobs SET state='Retry',attempts=0,last_attempt=0 WHERE state='Retry'")
+            for row in c.execute("SELECT snapshot FROM private_commercial_documents WHERE kind='invoice'").fetchall():
+                doc=json.loads(row['snapshot']);key=doc.get('source',{}).get('privateMessageKey')
+                if key and any(l.get('subCostEstimateCents') is None for l in doc.get('lines',[])):
+                    c.execute("INSERT INTO private_commercial_jobs(message_key,state) VALUES (?,'Queued') ON CONFLICT(message_key) DO UPDATE SET state='Queued',attempts=0,last_attempt=0",(key,))
+            c.execute("INSERT OR REPLACE INTO private_commercial_settings VALUES ('parser_revision','full-recap-codes-v1')")
 def candidate(message,attachments):
     subject=message.get('subject') or ''
     if re.search(r'remittance\s*(?:-\s*)?advice',subject,re.I):return True
@@ -157,22 +165,40 @@ def process_private_message(db,key):
         count+=1;data=part.get_payload(decode=True)
         if not data:raise ValueError('Retained PDF attachment is empty')
         digest=hashlib.sha256(data).hexdigest()
-        with db() as c:prior=c.execute('SELECT kind FROM private_commercial_documents WHERE digest=?',(digest,)).fetchone()
-        if prior and prior['kind']!='review':continue
+        with db() as c:prior=c.execute('SELECT kind,snapshot FROM private_commercial_documents WHERE digest=?',(digest,)).fetchone()
+        prior_doc=json.loads(prior['snapshot']) if prior else None
+        needs_codes=bool(prior_doc and prior_doc['kind']=='invoice' and any(l.get('subCostEstimateCents') is None for l in prior_doc.get('lines',[])))
+        if prior and prior['kind']!='review' and not needs_codes:continue
         try:
             reader=PdfReader(io.BytesIO(data))
             if len(reader.pages)>100:raise ValueError('PDF page limit exceeded')
             text='\n'.join(p.extract_text() or '' for p in reader.pages)
         except Exception:text=''
         source={'privateMessageKey':key}
-        if text.strip() and save_text(db,text,filename,digest,source):continue
+        if text.strip():
+            try:
+                from commercial_spectrum import parse as spectrum_parse
+                doc=spectrum_parse(text,filename);doc.update(filename=filename,digest=digest,source=source)
+                with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET kind=excluded.kind,snapshot=excluded.snapshot',(digest,doc['kind'],json.dumps(doc),now()))
+                import billing_recaps as br
+                br.initialize(db)
+                if doc['kind']=='spectrum_recap':
+                    doc.update(receivedAt=row['state'] and now(),subject=str(message.get('subject','')))
+                    with db() as c:
+                        c.execute('INSERT OR REPLACE INTO billing_recap_documents VALUES (?,?,?,?)',(digest,key,json.dumps(doc),now()))
+                        c.execute('INSERT OR REPLACE INTO billing_recap_messages VALUES (?,?,?)',(key,json.dumps({'subject':str(message.get('subject','')),'receivedAt':now(),'state':'Recap processed privately','detail':'Spectrum recap codes and signed total reconciled; periods before October 27 retained without historical alerts.'}),now()))
+                continue
+            except ValueError:pass
+            if not needs_codes and save_text(db,text,filename,digest,source):continue
         try:
             from commercial_scan import read_pdf
             doc,pages=read_pdf(data)
             doc.update(filename=filename,digest=digest,source=source)
             doc['source']['verification']='Automatic local OCR; recognized quantities, extended amounts, billing codes and printed total reconcile'
-            with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET kind=excluded.kind,snapshot=excluded.snapshot WHERE private_commercial_documents.kind=\'review\'',(digest,doc['kind'],json.dumps(doc),now()))
+            if prior_doc and prior_doc['kind']=='invoice' and (doc.get('amountCents'),doc.get('week'),doc.get('projectCode'))!=(prior_doc.get('amountCents'),prior_doc.get('week'),prior_doc.get('projectCode')):raise ValueError('Cost enrichment changed invoice identity')
+            with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET kind=excluded.kind,snapshot=excluded.snapshot',(digest,doc['kind'],json.dumps(doc),now()))
         except Exception:
+            if prior_doc and prior_doc['kind']=='invoice':continue
             verified=False
             doc={'kind':'review','classificationPending':True,'filename':filename,'digest':digest,'source':source,'reason':'Automatic reading is retrying privately; original email and attachment are safely archived','text':text}
             with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET snapshot=excluded.snapshot WHERE private_commercial_documents.kind=\'review\'',(digest,'review',json.dumps(doc),now()))
@@ -252,7 +278,10 @@ def report(db):
             else:unbounded+=1
             cost_review.append({'projectCode':d['projectCode'],'week':d['week'],**line,'costMinimumCents':low,'costMaximumCents':high})
     revenue=sum(d['amountCents'] for d in unique)
-    profit={'minimumCents':revenue-cost_max if not unbounded else None,'maximumCents':revenue-cost_min if not unbounded else None,'costMinimumCents':cost_min,'costMaximumCents':cost_max,'unboundedLines':unbounded,'lines':cost_review,'basis':'Customer billing less rate-card subcontractor costs, before overhead. Range covers every applicable variant of truncated codes. Actual subcontractor invoices and bank payments are not verified.'}
+    fully_costed=[d for d in unique if all(l.get('subCostEstimateCents') is not None for l in d['lines'])]
+    pending=[{'week':d['week'],'projectCode':d['projectCode'],'amountCents':d['amountCents']} for d in unique if d not in fully_costed]
+    verified_profit=sum(d['amountCents']-sum(l['subCostEstimateCents'] for l in d['lines']) for d in fully_costed)
+    profit={'minimumCents':revenue-cost_max if not unbounded else None,'maximumCents':revenue-cost_min if not unbounded else None,'costMinimumCents':cost_min,'costMaximumCents':cost_max,'unboundedLines':unbounded,'lines':cost_review,'verifiedProfitCents':verified_profit,'fullyCostedWeeks':len(fully_costed),'totalWeeks':len(unique),'pendingWeeks':pending,'completeProfitCents':verified_profit if not pending else None,'basis':'Customer billing less quantities multiplied by the confirmed subcontractor rate-card costs, before overhead. Missing full codes prevent a complete profit total.'}
     return {'archive':archive,'invoices':unique,'receipts':receipts,'review':review,'tracking':tracking,'profitEstimate':profit, 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':revenue,'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Remittance advice is not proof of bank receipt. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
 
 def source(db,key):

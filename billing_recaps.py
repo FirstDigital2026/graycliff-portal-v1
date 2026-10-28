@@ -16,7 +16,7 @@ SHEET_NAME = 'Graycliff Billing Recap Reconciliation'
 COLS = ['Record Key','Job / location','Area','Week ending','Status','Our billed amount',
         'Recap amount','Difference','Code / quantity comparison','Source file','Received at','Job key']
 RECAP = re.compile(r'\b(?:payroll|billing)\s+recaps?\b|\bcontractor invoices?\s*(?:&|and)\s*(?:payroll\s*)?recaps?\b', re.I)
-LINE = re.compile(r'^((?:[0-9]{2,3}-)?[A-Z]{2}\d{2}[A-Z]?)\+?\s+.*?(\(?\$[\d,]+\.\d{2}\)?)\s*(-?[\d.]+)\s*100\.00\s*%\s*(.+)$')
+LINE = re.compile(r'^((?:[0-9]{2,3}-)?[A-Z]{2}\d{2}[A-Z]?|257)\+?\s+.*?(\(?\$[\d,]+\.\d{2}\)?)\s*(-?[\d.]+)\s*100\.00\s*%\s*(.+)$')
 
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -56,7 +56,7 @@ def parse_text(text,filename):
     weeks=set()
     for m,d,y in re.findall(r'Week\s+Ending:\s*(\d{1,2})/(\d{1,2})/(\d{4})',text,re.I):
         weeks.add(date(int(y),int(m),int(d)).isoformat())
-    areas=set(re.findall(r'\b(FLORENCE|COLUMBIA),\s*SC\b',text,re.I))
+    areas=set(re.findall(r'\b(FLORENCE|COLUMBIA),\s*SC(?:\b|_)',text,re.I))
     if len(weeks)!=1 or len(areas)!=1: raise ValueError('Recap week or area is missing or ambiguous. Original retained for review.')
     totals=re.findall(r'(?m)^\s*Sub\s+\$([\d,]+\.\d{2})',text)
     if len(totals)!=1: raise ValueError('Recap total could not be verified. No amounts assumed.')

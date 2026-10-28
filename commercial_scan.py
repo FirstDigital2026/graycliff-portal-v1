@@ -95,9 +95,10 @@ def read_pages(data):
 
 def read_pdf(data):
     pages=read_pages(data)
-    try:return scanned_invoice(pages),pages
+    from commercial_cost_codes import enrich
+    try:return enrich(scanned_invoice(pages),pages),pages
     except ValueError:
-        try:return scanned_invoice(pages,alternative=True),pages
+        try:return enrich(scanned_invoice(pages,alternative=True),pages),pages
         except ValueError:pass
         # Text-based remittance and recap parsers also get the full OCR output.
         text='\n'.join(p['text'] for p in pages)
