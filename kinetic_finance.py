@@ -107,7 +107,9 @@ def ingest(db,message,attachments,key,token):
     return {'state':state,'detail':'Commercial document retained privately.'}
 def report(db):
     initialize(db)
-    with db() as c:docs=[json.loads(r['snapshot']) for r in c.execute('SELECT snapshot FROM private_commercial_documents')]
+    with db() as c:
+        docs=[json.loads(r['snapshot']) for r in c.execute('SELECT snapshot FROM private_commercial_documents')]
+        archive=[dict(r) for r in c.execute('SELECT message_key,state,detail,created_at FROM private_commercial_messages ORDER BY created_at DESC')]
     invoices=[d for d in docs if d['kind']=='invoice']; known={d['projectCode'] for d in invoices}; receipts=[];unallocated=[]
     for d in docs:
         if d['kind']!='remittance':continue
@@ -125,4 +127,14 @@ def report(db):
     grouped={}
     for d in invoices:grouped.setdefault((d['projectCode'],d['week']),[]).append(d)
     unique=[v[0] for v in grouped.values() if len(v)==1]
-    return {'invoices':unique,'receipts':receipts,'review':[{'filename':d['filename'],'reason':d['reason']} for d in docs if d['kind']=='review']+[{'filename':v[0]['filename'],'reason':'Multiple invoice versions for '+str(k)} for k,v in grouped.items() if len(v)>1], 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':sum(d['amountCents'] for d in unique),'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Customer invoice amounts and cash receipts are separate. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
+    review=[{'filename':d['filename'],'reason':d['reason']} for d in docs if d['kind']=='review' and (any(code in d.get('text','') for code in known) or any(norm(line.split()[0]) in REV for line in d.get('text','').splitlines() if line.split()))]
+    review += [{'filename':v[0]['filename'],'reason':'Multiple invoice versions for '+str(key)} for key,v in grouped.items() if len(v)>1]
+    review += [{'filename':str(key),'reason':'Conflicting remittance amounts; payment excluded'} for key in conflicts]
+    return {'archive':archive,'invoices':unique,'receipts':receipts,'review':review, 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':sum(d['amountCents'] for d in unique),'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Customer invoice amounts and cash receipts are separate. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
+
+def source(db,key):
+    if not re.fullmatch(r'[a-f0-9]{64}',str(key)):raise ValueError('Invalid private source reference')
+    initialize(db)
+    with db() as c:row=c.execute('SELECT mime,mime_hash FROM private_commercial_messages WHERE message_key=?',(key,)).fetchone()
+    if not row or hashlib.sha256(row['mime']).hexdigest()!=row['mime_hash']:raise ValueError('Private source could not be verified')
+    return {'contentBase64':base64.b64encode(row['mime']).decode(),'filename':'remittance-'+key[:12]+'.eml'}
