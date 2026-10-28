@@ -18,7 +18,18 @@ def initialize(db):
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_messages (message_key TEXT PRIMARY KEY, mime BLOB NOT NULL, mime_hash TEXT NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL)')
 def candidate(message,attachments):
-    if re.search(r'remittance\s+advice',message.get('subject',''),re.I):return True
+    subject=message.get('subject') or ''
+    if re.search(r'remittance\s*(?:-\s*)?advice',subject,re.I):return True
+    # Identify financial packets before text extraction: scans have no text
+    # layer and must never fall through into shared operational attachments.
+    for a in attachments:
+        name=str(a.get('name') or '')
+        label=subject+' '+name
+        if name.lower().endswith('.pdf') and (
+            re.search(r'remittance|payroll.*recap|subcon.*invoice',label,re.I)
+            or (re.search(r'first\s*digi(?:tal|tial)|kinetic',label,re.I)
+                and re.search(r'invoice|billing|recap|week[ ._-]*ending|w[ ./_-]*e\b',label,re.I))
+        ):return True
     import graph_import as graph
     for name,text in graph._candidate_document_texts(attachments):
         if re.search(r'Week Ending:',text,re.I) and any(norm(line.split()[0]) in REV for line in text.splitlines() if line.split()):return True
@@ -53,7 +64,7 @@ def recap(text):
     if not re.search(r'First\s+Digital',text,re.I):raise ValueError('Contractor not verified')
     weeks=set(re.findall(r'Week Ending:\s*(\d+)/(\d+)/(\d+)',text,re.I))
     codes=set(re.findall(r'(?m)^\s*(\d{3}-[A-Z0-9]+)\s*$',text))
-    totals=re.findall(r'(?m)^\s*Sub\s+\$([\d,]+\.\d{2})',text)
+    totals=re.findall(r'(?mi)^\s*Sub\s+\$([\d,]+\.\d{2})',text)
     if len(weeks)!=1 or len(codes)!=1 or len(totals)!=1:raise ValueError('Recap identity or total needs review')
     m,d,y=map(int,next(iter(weeks)));lines=[]
     text=re.sub(r'\n[ \t]*DEPTH[ \t]*\n',' DEPTH ',text)
@@ -84,9 +95,12 @@ def remittance(text):
 def save_text(db,text,filename,digest,source=None):
     initialize(db)
     with db() as c:
-        if c.execute('SELECT 1 FROM private_commercial_documents WHERE digest=?',(digest,)).fetchone():return True
+        prior=c.execute('SELECT kind FROM private_commercial_documents WHERE digest=?',(digest,)).fetchone()
+        if prior:return prior['kind']!='review'
     try:doc=remittance(text) if re.search(r'Remittance Advice|Remittance - Advice',text,re.I) else invoice(text)
-    except ValueError as exc:doc={'kind':'review','reason':str(exc),'text':text}
+    except ValueError as exc:
+        scan=not text.strip()
+        doc={'kind':'review','reason':'Scanned PDF: visual review required; excluded from totals until verified' if scan else str(exc),'text':text,'classificationPending':scan}
     doc.update(filename=filename,source=source or {},digest=digest)
     with db() as c:c.execute('INSERT OR IGNORE INTO private_commercial_documents VALUES (?,?,?,?)',(digest,doc['kind'],json.dumps(doc),now()))
     return doc['kind']!='review'
@@ -107,9 +121,14 @@ def ingest(db,message,attachments,key,token):
         filename,mime,data=f
         if not filename.lower().endswith('.pdf'):continue
         count+=1
-        reader=PdfReader(io.BytesIO(data))
-        if len(reader.pages)>100:verified=False;continue
-        text='\n'.join(p.extract_text() or '' for p in reader.pages)
+        try:
+            reader=PdfReader(io.BytesIO(data))
+            if len(reader.pages)>100:raise ValueError('PDF exceeds 100-page review limit')
+            text='\n'.join(p.extract_text() or '' for p in reader.pages)
+        except Exception:
+            # Retain encrypted, damaged and oversized PDFs as visible review
+            # items instead of losing the packet or marking a retry imported.
+            text=''
         verified=save_text(db,text,filename,hashlib.sha256(data).hexdigest(),{'receivedAt':message.get('receivedDateTime',''),'messageKey':key}) and verified
     state='Imported' if count and verified else 'Needs review'
     with db() as c:c.execute('UPDATE private_commercial_messages SET state=?, detail=? WHERE message_key=?',(state,'Private source retained and commercial analysis updated' if state=='Imported' else 'Private source retained; document requires owner review',key))
@@ -152,7 +171,7 @@ def report(db):
     for key,versions in grouped.items():
         if len({v['amountCents'] for v in versions})==1:
             unique.append(sorted(versions,key=lambda v:(v.get('sourceType')=='recap',len(v['lines'])),reverse=True)[0])
-    review=[{'filename':d['filename'],'reason':d['reason']} for d in docs if d['kind']=='review' and (any(code in d.get('text','') for code in known) or any(norm(line.split()[0]) in REV for line in d.get('text','').splitlines() if line.split()))]
+    review=[{'filename':d['filename'],'reason':d['reason']} for d in docs if d['kind']=='review' and (d.get('classificationPending') or any(code in d.get('text','') for code in known) or any(norm(line.split()[0]) in REV for line in d.get('text','').splitlines() if line.split()))]
     review += [{'filename':v[0]['filename'],'reason':'Conflicting invoice versions for '+str(key)} for key,v in grouped.items() if len({d['amountCents'] for d in v})>1]
     review += [{'filename':str(key),'reason':'Conflicting remittance amounts; payment excluded'} for key in conflicts]
     return {'archive':archive,'invoices':unique,'receipts':receipts,'review':review, 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':sum(d['amountCents'] for d in unique),'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Customer invoice amounts and cash receipts are separate. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
