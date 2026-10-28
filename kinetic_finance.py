@@ -214,14 +214,16 @@ def report(db):
     for d in docs:
         if d['kind']!='remittance':continue
         for i,line in enumerate(d['lines']):
-            item={**line,'paymentNumber':d['paymentNumber'],'paymentDate':d['paymentDate'],'sourceFile':d['filename'],'key':d['digest']+':'+str(i)}
+            source=d.get('source') or {};stamp=source.get('sentAt') or source.get('receivedAt') or ''
+            notice_date=stamp[:10] if re.fullmatch(r'\d{4}-\d{2}-\d{2}',stamp[:10]) else None
+            item={**line,'paymentNumber':d['paymentNumber'],'paymentDate':d['paymentDate'],'noticeDate':notice_date,'sourceFile':d['filename'],'key':d['digest']+':'+str(i)}
             (receipts if line['projectCode'] in known else unallocated).append(item)
     # Repeated PDF exports with the same payment identity are counted once.
     by_payment={};conflicts=[]
     for r in receipts:
         key=(r['paymentNumber'],r['invoiceRef'],r['projectCode'])
         if key in by_payment and by_payment[key]['amountCents']!=r['amountCents']:conflicts.append(key)
-        else:by_payment[key]=r
+        elif key not in by_payment or (r.get('noticeDate') and not by_payment[key].get('noticeDate')):by_payment[key]=r
     receipts=[r for key,r in by_payment.items() if key not in conflicts]
     # Same job/week invoice revisions are review items, never additive revenue.
     grouped={}
@@ -233,7 +235,25 @@ def report(db):
     review=[{'filename':d['filename'],'reason':d['reason']} for d in docs if d['kind']=='review' and (d.get('classificationPending') or any(code in d.get('text','') for code in known) or any(norm(line.split()[0]) in REV for line in d.get('text','').splitlines() if line.split()))]
     review += [{'filename':v[0]['filename'],'reason':'Conflicting invoice versions for '+str(key)} for key,v in grouped.items() if len({d['amountCents'] for d in v})>1]
     review += [{'filename':str(key),'reason':'Conflicting remittance amounts; payment excluded'} for key in conflicts]
-    return {'archive':archive,'invoices':unique,'receipts':receipts,'review':review, 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':sum(d['amountCents'] for d in unique),'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Customer invoice amounts and cash receipts are separate. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
+    from kinetic_tracking import reconcile
+    from zoneinfo import ZoneInfo
+    tracking=reconcile(unique,receipts,datetime.now(ZoneInfo('America/New_York')).date())
+    cost_min=cost_max=0;unbounded=0;cost_review=[]
+    for d in unique:
+        for line in d['lines']:
+            cost=line['subCostEstimateCents']
+            if cost is not None:cost_min+=cost;cost_max+=cost;continue
+            candidates=line.get('codeCandidates') or [line['code']]
+            costs=[COST.get(norm(code)) for code in candidates]
+            values=[money(Decimal(line['quantity'])*Decimal(c['rate'])) for c in costs if c]
+            bounded=bool(values) and all(costs)
+            low,high=(min(values),max(values)) if bounded else (None,None)
+            if bounded:cost_min+=low;cost_max+=high
+            else:unbounded+=1
+            cost_review.append({'projectCode':d['projectCode'],'week':d['week'],**line,'costMinimumCents':low,'costMaximumCents':high})
+    revenue=sum(d['amountCents'] for d in unique)
+    profit={'minimumCents':revenue-cost_max if not unbounded else None,'maximumCents':revenue-cost_min if not unbounded else None,'costMinimumCents':cost_min,'costMaximumCents':cost_max,'unboundedLines':unbounded,'lines':cost_review,'basis':'Customer billing less rate-card subcontractor costs, before overhead. Range covers every applicable variant of truncated codes. Actual subcontractor invoices and bank payments are not verified.'}
+    return {'archive':archive,'invoices':unique,'receipts':receipts,'review':review,'tracking':tracking,'profitEstimate':profit, 'unallocatedReceipts':unallocated,'currency':'USD','revenueCents':revenue,'receiptsCents':sum(d['amountCents'] for d in receipts),'subCostEstimateCents':sum(l['subCostEstimateCents'] or 0 for d in unique for l in d['lines']),'unpricedCostLines':sum(l['subCostEstimateCents'] is None for d in unique for l in d['lines']),'note':'Kinetic only. Remittance advice is not proof of bank receipt. Subcontractor costs are rate-card estimates, not paid costs. Revenue excludes conflicting invoice versions. Remittance allocation uses project codes established by invoices whose work codes match the Kinetic rate card; location is never a classifier.'}
 
 def source(db,key):
     if not re.fullmatch(r'[a-f0-9]{64}',str(key)):raise ValueError('Invalid private source reference')
