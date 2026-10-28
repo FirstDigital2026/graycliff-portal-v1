@@ -17,6 +17,8 @@ class FullCodes(unittest.TestCase):
     def test_spectrum_recaps_accept_on_call_code_and_const_header(self):
         text='Payroll Recaps\nFirst Digital\nWeek Ending: 1/3/2026\n9819304003-COLUMBIA, SC_CONST\nEmp # 127675\nDaily No 1\n257 ON CALL PAY $150.001.5100.00%Pay Only\nSub $150.00'
         d=parse(text,'test.pdf');self.assertEqual(d['kind'],'spectrum_recap');self.assertEqual(d['amountCents'],15000)
+        self.assertEqual(parse(text.replace('9819304003-COLUMBIA, SC_CONST','981 - COLUMBIA'),'test.pdf')['amountCents'],15000)
+        with self.assertRaises(ValueError):parse(text.replace('9819304003-COLUMBIA, SC_CONST','981 - COLUMBIA\n956 - FLORENCE'),'test.pdf')
 
     def test_spectrum_invoice_rejects_partial_total_and_kinetic_code(self):
         text='First Digital Graycliff\nWeek Ending: 1/3/2026\nJob # : 981TEST\n70-FS01+ Work 2 $40.00$20.00\nTotal: $40.00'

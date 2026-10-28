@@ -57,6 +57,7 @@ def parse_text(text,filename):
     for m,d,y in re.findall(r'Week\s+Ending:\s*(\d{1,2})/(\d{1,2})/(\d{4})',text,re.I):
         weeks.add(date(int(y),int(m),int(d)).isoformat())
     areas=set(re.findall(r'\b(FLORENCE|COLUMBIA),\s*SC(?:\b|_)',text,re.I))
+    areas.update(re.findall(r'(?mi)^\s*\d{3}\s*-\s*(FLORENCE|COLUMBIA)\s*$',text))
     if len(weeks)!=1 or len(areas)!=1: raise ValueError('Recap week or area is missing or ambiguous. Original retained for review.')
     totals=re.findall(r'(?m)^\s*Sub\s+\$([\d,]+\.\d{2})',text)
     if len(totals)!=1: raise ValueError('Recap total could not be verified. No amounts assumed.')

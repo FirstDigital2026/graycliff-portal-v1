@@ -22,13 +22,13 @@ def initialize(db):
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_settings (name TEXT PRIMARY KEY,value TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS private_commercial_jobs (message_key TEXT PRIMARY KEY,state TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,last_attempt REAL NOT NULL DEFAULT 0)')
         revision=c.execute("SELECT value FROM private_commercial_settings WHERE name='parser_revision'").fetchone()
-        if not revision or revision['value']!='full-recap-codes-v1':
+        if not revision or revision['value']!='full-recap-codes-v2':
             c.execute("UPDATE private_commercial_jobs SET state='Retry',attempts=0,last_attempt=0 WHERE state='Retry'")
             for row in c.execute("SELECT snapshot FROM private_commercial_documents WHERE kind='invoice'").fetchall():
                 doc=json.loads(row['snapshot']);key=doc.get('source',{}).get('privateMessageKey')
                 if key and any(l.get('subCostEstimateCents') is None for l in doc.get('lines',[])):
                     c.execute("INSERT INTO private_commercial_jobs(message_key,state) VALUES (?,'Queued') ON CONFLICT(message_key) DO UPDATE SET state='Queued',attempts=0,last_attempt=0",(key,))
-            c.execute("INSERT OR REPLACE INTO private_commercial_settings VALUES ('parser_revision','full-recap-codes-v1')")
+            c.execute("INSERT OR REPLACE INTO private_commercial_settings VALUES ('parser_revision','full-recap-codes-v2')")
 def candidate(message,attachments):
     subject=message.get('subject') or ''
     if re.search(r'remittance\s*(?:-\s*)?advice',subject,re.I):return True
