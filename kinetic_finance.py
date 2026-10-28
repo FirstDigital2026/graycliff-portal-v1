@@ -96,13 +96,13 @@ def save_text(db,text,filename,digest,source=None):
     initialize(db)
     with db() as c:
         prior=c.execute('SELECT kind FROM private_commercial_documents WHERE digest=?',(digest,)).fetchone()
-        if prior:return prior['kind']!='review'
+        if prior and prior['kind']!='review':return True
     try:doc=remittance(text) if re.search(r'Remittance Advice|Remittance - Advice',text,re.I) else invoice(text)
     except ValueError as exc:
         scan=not text.strip()
         doc={'kind':'review','reason':'Scanned PDF: visual review required; excluded from totals until verified' if scan else str(exc),'text':text,'classificationPending':scan}
     doc.update(filename=filename,source=source or {},digest=digest)
-    with db() as c:c.execute('INSERT OR IGNORE INTO private_commercial_documents VALUES (?,?,?,?)',(digest,doc['kind'],json.dumps(doc),now()))
+    with db() as c:c.execute('INSERT INTO private_commercial_documents VALUES (?,?,?,?) ON CONFLICT(digest) DO UPDATE SET kind=excluded.kind,snapshot=excluded.snapshot WHERE private_commercial_documents.kind=\'review\'',(digest,doc['kind'],json.dumps(doc),now()))
     return doc['kind']!='review'
 def ingest(db,message,attachments,key,token):
     import graph_import as graph
