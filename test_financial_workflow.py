@@ -31,6 +31,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(r['actionCount'],1);self.assertEqual(r['outstandingCents'],0)
     def test_old_unverified_notices_remain_out_of_current_collections(self):
         receipts=[{'projectCode':'P','invoiceRef':ref,'amountCents':100,'sourceKey':'a'*64} for ref in ('FLO-123023','FLO-101026','unknown')]
+        receipts.append({'projectCode':'P','invoiceRef':'FLO-0727224','amountCents':100,'paymentDate':'8/8/2024'})
         r=w.collections({'tracking':{'asOf':'2026-10-29','unmatchedRemittances':receipts}},'Spectrum')
         self.assertEqual(r['evidenceGapCount'],2);self.assertEqual(r['outstandingCents'],0)
         self.assertEqual(r['items'][0]['sourceKey'],'a'*64)

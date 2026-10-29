@@ -87,8 +87,10 @@ def collections(report,business,recaps=None):
           'sourceKey':source.get('privateMessageKey'),'references':[r.get('paymentNumber','')+' · '+r.get('invoiceRef','') for r in receipts],
           'detail':w['status'],'nextAction':action})
     for review in report.get('review',[]):
-        items.append({'kind':'Billing source discrepancy','business':business,'area':'','projectCode':'','week':'','outstandingCents':None,
-          'sources':[review['filename']],'detail':review['reason'],'nextAction':'Resolve the conflicting or incomplete source document before using its total.'})
+        doc=next((d for d in report.get('invoices',[]) if d.get('filename')==review['filename']),{})
+        items.append({'kind':'Billing source discrepancy','business':business,'area':doc.get('area',''),'projectCode':doc.get('projectCode',''),'week':doc.get('week',''),'outstandingCents':None,
+          'billedCents':doc.get('amountCents'),'sourceKey':(doc.get('source') or {}).get('privateMessageKey'),
+          'sources':[review['filename']],'detail':review['reason'],'nextAction':'Resolve the recap discrepancy against the issued invoice; this does not establish a remittance shortage.' if 'Remittance comparison uses the issued invoice' in review['reason'] else 'Resolve the conflicting or incomplete source document before using its total.'})
     for r in tracking.get('unmatchedRemittances',[]):
         from kinetic_tracking import payment_day
         evidence_day=payment_day(r.get('invoiceDate'))
@@ -96,6 +98,7 @@ def collections(report,business,recaps=None):
         if not evidence_day and reference:
             try:evidence_day=datetime.strptime(reference.group(1),'%m%d%y').date().isoformat()
             except ValueError:pass
+        if not evidence_day:evidence_day=payment_day(r.get('paymentDate')) or payment_day(r.get('noticeDate'))
         year=(tracking.get('asOf') or datetime.now(timezone.utc).date().isoformat())[:4]
         # Owner asked to forget unverified work before this year. Preserve its
         # evidence privately without turning it into a new collection task.
