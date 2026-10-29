@@ -12,7 +12,7 @@ def parse(text, filename):
         return {**d,'kind':'spectrum_recap','business':'Spectrum','amountCents':d['totalCents']}
     if not re.search(r'Graycliff',text,re.I):raise ValueError('Payer not verified')
     week=re.search(r'Week\s+Ending\s*:?\s*(\d+)/(\d+)/(\d+)',text,re.I)
-    project=re.search(r'Job\s*#\s*:\s*([A-Z0-9]+)',text,re.I)
+    project=re.search(r'Job\s*#\s*:\s*((?=[A-Z0-9]*\d)[A-Z0-9]+)',text,re.I)
     if not project:project=re.search(r'(?m)^\s*(\d{6,})\s*-\s*(?:FLORENCE|COLUMBIA),\s*SC\b',text,re.I)
     total=re.findall(r'(?m)^\s*Total:\s*(\(?\$[\d,]+\.\d{2}\)?)',text)
     def cents(value):return int(Decimal(re.sub(r'[,$()]','',value))*100)*(-1 if '(' in value else 1)

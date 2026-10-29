@@ -33,8 +33,9 @@ class SpectrumTrackingTests(unittest.TestCase):
         self.assertEqual(r['tracking']['flagCount'],0)
 
     def test_legacy_invoice_without_rate_and_accounting_credit(self):
-        text='First Digital Graycliff\nFor Week Ending 1/3/2026\n95603000 - FLORENCE, SC\nFS01+ Work 2 $40.00\nTotal: $40.00'
+        text='First Digital Graycliff\nFor Week Ending 1/3/2026\nJob#: Bill To:\n95603000 - FLORENCE, SC\nFS01+ Work 2 $40.00\nTotal: $40.00'
         self.assertEqual(parse(text,'test.pdf')['amountCents'],4000)
+        self.assertEqual(parse(text,'test.pdf')['projectCode'],'95603000')
         text='First Digital Graycliff\nWeek Ending: 1/3/2026\nJob # : 981TEST\n70-MC10+ Setup -1 ($56.00)$56.00\nTotal: ($56.00)'
         self.assertEqual(parse(text,'test.pdf')['amountCents'],-5600)
         text='Payroll Recaps\nFirst Digital\nWeek Ending: 1/3/2026\n981 - COLUMBIA\nEmp # 1\nDaily No 1\n70-MC10+ Setup ($56.00)-1100.00%Location\nSub ($56.00)'
