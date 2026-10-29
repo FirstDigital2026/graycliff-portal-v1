@@ -59,9 +59,9 @@ def parse_text(text,filename):
     areas=set(re.findall(r'\b(FLORENCE|COLUMBIA),\s*SC(?:\b|_)',text,re.I))
     areas.update(re.findall(r'(?mi)^\s*\d{3}\s*-\s*(FLORENCE|COLUMBIA)\s*$',text))
     if len(weeks)!=1 or len(areas)!=1: raise ValueError('Recap week or area is missing or ambiguous. Original retained for review.')
-    totals=re.findall(r'(?m)^\s*Sub\s+\$([\d,]+\.\d{2})',text)
+    totals=re.findall(r'(?m)^\s*Sub\s+(\(?\$[\d,]+\.\d{2}\)?)',text)
     if len(totals)!=1: raise ValueError('Recap total could not be verified. No amounts assumed.')
-    expected=int(Decimal(totals[0].replace(',',''))*100)
+    expected=int(Decimal(re.sub(r'[,$()]','',totals[0]))*100)*(-1 if '(' in totals[0] else 1)
     blocks=defaultdict(list);daily='';missed=[]
     for raw in text.splitlines():
         line=raw.strip()

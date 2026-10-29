@@ -300,6 +300,9 @@ def handle(store, db, payload):
     if op=='kinetic_financials':
         from kinetic_finance import report
         return report(db)
+    if op=='spectrum_financials':
+        from spectrum_tracking import report
+        return report(db)
     if op=='commercial_source':
         from kinetic_finance import source
         return source(db,payload.get('key',''))

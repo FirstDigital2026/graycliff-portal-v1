@@ -4,6 +4,24 @@ from kinetic_tracking import reconcile
 
 
 class TrackingTests(unittest.TestCase):
+    def test_payment_projection_uses_stated_dates_not_notice_dates(self):
+        invoices,receipts=self.history()
+        for r,d in zip(receipts,['1/30/26','2/10/2026','2026-02-19']):r['paymentDate']=d
+        r=reconcile(invoices+[self.invoice('2026-01-24')],receipts,date(2026,2,1))
+        row=r['weeks'][0]
+        self.assertEqual(row['expectedDate'],'2026-02-23')
+        self.assertEqual(row['expectedPaymentDate'],'2026-02-24')
+        self.assertEqual(row['expectedPaymentStart'],'2026-02-20')
+        self.assertEqual(row['expectedPaymentEnd'],'2026-02-26')
+        self.assertEqual(r['weeks'][1]['statedPaymentDates'],['2026-02-19'])
+
+    def test_payment_projection_needs_three_complete_positive_matches(self):
+        invoices,receipts=self.history()
+        for r in receipts:r['paymentDate']='invalid'
+        receipts[0]['paymentDate']='1/30/26';receipts[1]['paymentDate']='2/10/26'
+        r=reconcile(invoices+[self.invoice('2026-01-24')],receipts)
+        self.assertIsNone(r['weeks'][0]['expectedPaymentDate'])
+
     def invoice(self, week, amount=10000, project='P1'):
         return {'projectCode':project,'week':week,'amountCents':amount,'lines':[]}
 

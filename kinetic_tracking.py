@@ -1,7 +1,16 @@
 """Reconcile billing to remittance advice; never infer bank settlement."""
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from statistics import median
+
+
+def payment_day(value):
+    for fmt in ('%Y-%m-%d', '%m/%d/%Y', '%m/%d/%y'):
+        try:
+            return datetime.strptime(str(value), fmt).date().isoformat()
+        except (ValueError, TypeError):
+            pass
+    return None
 
 
 def reference_week(reference, invoices):
@@ -39,7 +48,7 @@ def reconcile(invoices, receipts, today=None):
         candidates[0]['remittances'].append(receipt)
         candidates[0]['matchBasis'].append(basis)
 
-    samples = []
+    samples = []; payment_samples = []
     for row in rows:
         remits = row['remittances']
         reported = sum(r['amountCents'] for r in remits)
@@ -47,15 +56,31 @@ def reconcile(invoices, receipts, today=None):
             lag = (date.fromisoformat(remits[0]['noticeDate'])-date.fromisoformat(row['week'])).days
             if lag >= 0:
                 samples.append((row['week'], lag))
+        if reported == row['amountCents'] and reported > 0 and len(remits) == 1:
+            stated = payment_day(remits[0].get('paymentDate'))
+            if stated:
+                lag = (date.fromisoformat(stated)-date.fromisoformat(row['week'])).days
+                if lag >= 0: payment_samples.append((row['week'], lag))
     lags = [lag for _, lag in sorted(samples)[-12:]]
     model = {'sampleCount': len(lags), 'minimumDays': min(lags) if len(lags) >= 3 else None,
              'medianDays': int(median(lags)) if len(lags) >= 3 else None,
              'maximumDays': max(lags) if len(lags) >= 3 else None,
              'basis': 'Observed email notice dates after billing week ending; estimate, not contractual terms'}
+    payment_lags = [lag for _, lag in sorted(payment_samples)[-12:]]
+    payment_model = {'sampleCount':len(payment_lags),
+                     'minimumDays':min(payment_lags) if len(payment_lags)>=3 else None,
+                     'medianDays':int(median(payment_lags)) if len(payment_lags)>=3 else None,
+                     'maximumDays':max(payment_lags) if len(payment_lags)>=3 else None,
+                     'basis':'Stated dates on matched remittance notices; no bank settlement verification'}
     for row in rows:
         reported = sum(r['amountCents'] for r in row['remittances'])
         row.update(reportedCents=reported, differenceCents=row['amountCents']-reported,
                    expectedStart=None, expectedDate=None, expectedEnd=None, overdueDays=0)
+        row.update(statedPaymentDates=sorted({d for r in row['remittances'] if (d:=payment_day(r.get('paymentDate')))}),
+                   expectedPaymentDate=None,expectedPaymentStart=None,expectedPaymentEnd=None)
+        if not row['remittances'] and payment_model['medianDays'] is not None:
+            for key, days in [('expectedPaymentDate',payment_model['medianDays']),('expectedPaymentStart',payment_model['minimumDays']),('expectedPaymentEnd',payment_model['maximumDays'])]:
+                row[key]=(date.fromisoformat(row['week'])+timedelta(days=days)).isoformat()
         if model['medianDays'] is not None:
             week = date.fromisoformat(row['week'])
             for key, days in [('expectedStart', model['minimumDays']), ('expectedDate', model['medianDays']), ('expectedEnd', model['maximumDays'])]:
@@ -73,7 +98,7 @@ def reconcile(invoices, receipts, today=None):
         else:
             row['status'] = 'Awaiting remittance' if row['expectedEnd'] else 'Awaiting remittance — timing not established'
         row['flagged'] = bool(row['differenceCents'] and (row['remittances'] or row['overdueDays']))
-    return {'asOf': today.isoformat(), 'model': model, 'weeks': sorted(rows, key=lambda r:r['week'], reverse=True),
+    return {'asOf': today.isoformat(), 'model': model, 'paymentModel':payment_model, 'weeks': sorted(rows, key=lambda r:r['week'], reverse=True),
             'unmatchedRemittances': unmatched, 'flagCount': sum(r['flagged'] for r in rows)+len(unmatched),
             'missingRemittanceCents': sum(r['differenceCents'] for r in rows if not r['remittances']),
             'overdueCents': sum(r['differenceCents'] for r in rows if r['overdueDays'] and r['differenceCents'] > 0),
