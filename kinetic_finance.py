@@ -132,8 +132,10 @@ def save_text(db,text,filename,digest,source=None):
 def ingest(db,message,attachments,key,token):
     import graph_import as graph
     initialize(db)
+    from financial_workflow import record
+    record(db,key,'Financial PDF','Received','Saving the original privately before automatic reading.',message.get('subject',''),message.get('receivedDateTime',''))
     sender=(message.get('from') or {}).get('emailAddress',{}).get('address','').lower()
-    if sender not in ('thomas.bramlette@firstdigitalsc.com','lwarner@graycliffent.com'):return {'state':'Needs review','detail':'Commercial sender requires owner review.'}
+    if sender not in ('thomas.bramlette@firstdigitalsc.com','lwarner@graycliffent.com'):raise ValueError('Commercial sender requires owner review.')
     raw=graph.get_message_mime(token,message['id'])
     if not raw or len(raw)>25_000_000:raise ValueError('Commercial source exceeds retention limit')
     digest=hashlib.sha256(raw).hexdigest()
@@ -301,5 +303,9 @@ def source(db,key):
     if not re.fullmatch(r'[a-f0-9]{64}',str(key)):raise ValueError('Invalid private source reference')
     initialize(db)
     with db() as c:row=c.execute('SELECT mime,mime_hash FROM private_commercial_messages WHERE message_key=?',(key,)).fetchone()
+    if not row:
+        from billing_closeout import initialize as closeout_initialize
+        closeout_initialize(db)
+        with db() as c:row=c.execute('SELECT mime,mime_hash FROM private_billing_closeout_messages WHERE message_key=?',(key,)).fetchone()
     if not row or hashlib.sha256(row['mime']).hexdigest()!=row['mime_hash']:raise ValueError('Private source could not be verified')
     return {'contentBase64':base64.b64encode(row['mime']).decode(),'filename':'remittance-'+key[:12]+'.eml'}

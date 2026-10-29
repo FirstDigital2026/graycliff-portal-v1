@@ -299,7 +299,9 @@ def handle(store, db, payload):
     initialize(db);op=payload.get('op')
     if op=='kinetic_financials':
         from kinetic_finance import report
-        return report(db)
+        from financial_workflow import processing,collections
+        result=report(db)
+        return {**result,'processing':processing(db),'collections':collections(result,'Kinetic')}
     if op=='spectrum_financials':
         from spectrum_tracking import report
         return report(db)
@@ -310,7 +312,9 @@ def handle(store, db, payload):
         from financial_report import report
         from billing_recaps import report as recap_report
         from spectrum_tracking import report as spectrum_report
-        return {**report(db),'recaps':recap_report(db),'spectrumRemittances':spectrum_report(db)}
+        from financial_workflow import processing,collections
+        recaps=recap_report(db);spectrum=spectrum_report(db)
+        return {**report(db),'recaps':recaps,'spectrumRemittances':spectrum,'processing':processing(db),'collections':collections(spectrum,'Spectrum',recaps)}
     key=str(payload['sheetId'])+':'+str(payload['rowId'])
     if op=='review_pricing':raise ValueError('Billing review shows unpriced files. Prices are added only when sending.')
     with db() as c:

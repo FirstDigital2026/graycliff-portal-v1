@@ -650,6 +650,20 @@ def run(store, db):
                 # Graph's hasAttachments flag is false for messages containing only inline pictures.
                 attachments = graph.list_attachments(token,message['id'],inline_content=False)
                 attachments = formats.enrich_push_parent(token,message,attachments)
+                from billing_closeout import candidate as is_issued_bill, ingest as close_issued_bill
+                from financial_workflow import record as workflow_record
+                if is_issued_bill(message,attachments):
+                    private_commercial=True
+                    try:
+                        message=graph.get_message_details(token,message['id'])
+                        issued=close_issued_bill(store,db,message,attachments,key,token)
+                        graph.move_message(token,message['id'],imported if issued['state']=='Completed' else review)
+                        stats['billingCloseouts']=stats.get('billingCloseouts',0)+1
+                    except Exception as exc:
+                        workflow_record(db,key,'Issued billing','Needs attention',str(exc)[:350] if isinstance(exc,ValueError) else 'Billing closeout could not be confirmed. Original retained; check the job before retrying.',message.get('subject',''),message.get('receivedDateTime',''))
+                        stats['failed']+=1
+                        graph.move_message(token,message['id'],review)
+                    continue
                 from kinetic_finance import candidate as is_commercial, ingest as ingest_commercial
                 if is_commercial(message,attachments):
                     private_commercial=True
@@ -662,8 +676,10 @@ def run(store, db):
                 audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),'State':'Received','Detail':'Processing email and documents.'})
                 from billing_recaps import candidate as is_recap, ingest as ingest_recap
                 if is_recap(message,attachments):
+                    workflow_record(db,key,'Billing recap','Processing','Comparing billing recap.',message.get('subject',''),message.get('receivedDateTime',''))
                     phase='reconciling billing recap'
                     recap=ingest_recap(store,db,message,attachments,key,token,sid)
+                    workflow_record(db,key,'Billing recap','Needs attention' if recap['state']=='Needs review' else 'Completed',recap['detail'])
                     audit(store,sid,key,State=recap['state'],Detail=recap['detail'])
                     graph.move_message(token,message['id'],review if recap['state']=='Needs review' else imported)
                     stats['recaps']=stats.get('recaps',0)+1
@@ -693,14 +709,18 @@ def run(store, db):
                         connection.execute('UPDATE portal_intake_review SET job_key=? WHERE message_key=?',(jobkey,key))
                 graph.move_message(token,message['id'],imported)
             except ValueError as exc:
+                if phase=='reconciling billing recap':workflow_record(db,key,'Billing recap','Needs attention',str(exc)[:350])
                 if private_commercial:
+                    workflow_record(db,key,'Financial document','Needs attention','Private document intake needs attention; check retained source and mailbox.',message.get('subject',''),message.get('receivedDateTime',''))
                     stats['failed']+=1
                     continue
                 audit(store,sid,key,State='Needs review',Detail=str(exc))
                 graph.move_message(token,message['id'],review)
                 stats['ignored'] += 1
             except Exception as exc:
+                if phase=='reconciling billing recap':workflow_record(db,key,'Billing recap','Needs attention','Recap comparison did not finish. Check its retained intake receipt.')
                 if private_commercial:
+                    workflow_record(db,key,'Financial document','Needs attention','Private document intake could not finish; check retained source and mailbox.',message.get('subject',''),message.get('receivedDateTime',''))
                     stats['failed']+=1
                     continue
                 # Do not record provider payloads, credentials or private HTTP data.
@@ -714,8 +734,12 @@ def run(store, db):
         from billing_recaps import sync_sheet as sync_recap_sheet
         sync_recap_sheet(store,db)
         audit(store,sid,'SYSTEM',Subject='Graycliff mailbox connection',State='Connected',Detail='Inbox checked. '+json.dumps(stats))
+        from financial_workflow import monitor
+        monitor(db,True)
         return {'ok':True,'configured':True,**stats,'message':'Mailbox intake checked the operational area sheets.'}
     except Exception:
+        from financial_workflow import monitor
+        monitor(db,False,'Automatic inbox check failed. Retained originals and pending emails are preserved.')
         if sid:
             try:
                 audit(store,sid,'SYSTEM',Subject='Graycliff mailbox connection',State='Connection error',Detail='Automatic intake requires attention. Emails remain in the mailbox for review.')
