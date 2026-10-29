@@ -1,5 +1,5 @@
 """Record Jason's issued bills from the shared inbox. Never sends billing mail."""
-import hashlib,json,re,time
+import hashlib,json,re,time,html
 from email import policy
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
@@ -26,9 +26,13 @@ def validate_message(message,raw):
     if not any(r.get('emailAddress',{}).get('address','').lower().endswith('@graycliffent.com') for r in recipients):raise ValueError('Customer recipient could not be verified on the issued billing email.')
     subject=message.get('subject','')
     if re.search(r'\btest\b|\bdraft\b|\bquote\b',subject,re.I):raise ValueError('Draft, quote and test emails cannot close jobs.')
-    body=re.sub(r'<[^>]+>',' ',(message.get('body') or {}).get('content',''))
+    body=(message.get('body') or {}).get('content','')
+    body=re.split(r'''(?is)<blockquote\b|<div\b[^>]*\bid=["'](?:divRplyFwdMsg|appendonsend)["']''',body)[0]
+    body=re.sub(r'(?i)</?(?:br|p|div|tr)\b[^>]*>','\n',body)
+    body=html.unescape(re.sub(r'<[^>]+>',' ',body))
     fresh=re.split(r'(?im)^\s*(?:from:|on .+wrote:|_{5,}|-{5,})',body)[0]
-    if not re.search(r'\bbill(?:ed|ing)?\b',subject+' '+fresh,re.I):raise ValueError('The current email does not explicitly identify issued billing.')
+    direct_subject='' if re.match(r'\s*(?:re|fw|fwd)\s*:',subject,re.I) else subject
+    if not re.search(r'\bbill(?:ed|ing)?\b',direct_subject+' '+fresh,re.I):raise ValueError('The current email does not explicitly identify issued billing.')
     when=parsedate_to_datetime(str(parsed.get('Date','')))
     if not when or when.tzinfo is None or when>datetime.now(timezone.utc):raise ValueError('The issued email date could not be verified.')
     return when.isoformat()

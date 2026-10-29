@@ -53,7 +53,7 @@ def build(docs,today=None):
         for line in d['lines']:
             if line['projectCode'] not in projects:continue
             key=(d['paymentNumber'],line['invoiceRef'],line['projectCode'])
-            item={**line,'paymentNumber':d['paymentNumber'],'paymentDate':d['paymentDate'],'noticeDate':stamp[:10] or None,'sourceFile':d['filename']}
+            item={**line,'paymentNumber':d['paymentNumber'],'paymentDate':d['paymentDate'],'noticeDate':stamp[:10] or None,'sourceFile':d['filename'],'sourceKey':(d.get('source') or {}).get('privateMessageKey')}
             if key in payments and item['amountCents']!=payments[key]['amountCents']:conflicts.add(key)
             elif key not in payments or (item['noticeDate'] and not payments[key]['noticeDate']):payments[key]=item
     receipts=[r for key,r in payments.items() if key not in conflicts]

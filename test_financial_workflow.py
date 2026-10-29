@@ -29,6 +29,13 @@ class WorkflowTests(unittest.TestCase):
     def test_recap_code_difference_even_when_amount_matches(self):
         r=w.collections({},'Spectrum',{'rows':[{'status':'Difference to review','differenceCents':0,'ourAmountCents':100,'recapAmountCents':100,'detail':'FS01: billed 2, recap 1'}]})
         self.assertEqual(r['actionCount'],1);self.assertEqual(r['outstandingCents'],0)
+    def test_old_unverified_notices_remain_out_of_current_collections(self):
+        receipts=[{'projectCode':'P','invoiceRef':ref,'amountCents':100,'sourceKey':'a'*64} for ref in ('FLO-123023','FLO-101026','unknown')]
+        r=w.collections({'tracking':{'asOf':'2026-10-29','unmatchedRemittances':receipts}},'Spectrum')
+        self.assertEqual(r['evidenceGapCount'],2);self.assertEqual(r['outstandingCents'],0)
+        self.assertEqual(r['items'][0]['sourceKey'],'a'*64)
+    def test_monitor_that_never_started_still_alerts(self):
+        self.assertTrue(w.processing(self.db,now=time.time()+301)['monitorStale'])
     def source(self):
         m=EmailMessage();m['Date']='Wed, 28 Oct 2026 13:00:00 -0400';m['From']='jason.mosqueda@firstdigitalsc.com';m['To']='customer@graycliffent.com';m.set_content('Billing attached.')
         m.add_attachment(workbook(),maintype='application',subtype='octet-stream',filename='Work Completed Spreadsheet (10 Main St).xlsx');return m.as_bytes()
@@ -52,6 +59,9 @@ class WorkflowTests(unittest.TestCase):
     def test_no_customer_and_test_mail_never_close(self):
         for m in ({**self.message(),'toRecipients':[]},{**self.message(),'subject':'TEST billing'}):
             with self.assertRaises(ValueError):b.validate_message(m,self.source())
+    def test_quoted_billing_does_not_close_a_new_reply(self):
+        for body in ('Please see the revised as-built.\nFrom: Jason\nBilling attached.', '<p>Checking on this.</p><div id="divRplyFwdMsg">Billing attached.</div>', '<p>Checking on this.</p><blockquote>Billing attached.</blockquote>'):
+            with self.assertRaises(ValueError):b.validate_message({**self.message(),'subject':'Re: Billing 10 Main St','body':{'content':body}},self.source())
     def test_conflicting_amount_never_closes(self):
         b.initialize(self.db)
         with self.db() as c:c.execute('INSERT INTO financial_spreadsheet_imports VALUES (?,?,?)',('123:456',json.dumps({'amountCents':100}),0))

@@ -1,5 +1,5 @@
 """Owner-only processing receipts and collections actions; no bank assertions."""
-import json,time,hashlib
+import json,time,hashlib,re
 from datetime import datetime,timezone
 from email.parser import BytesHeaderParser
 from email import policy
@@ -90,8 +90,19 @@ def collections(report,business,recaps=None):
         items.append({'kind':'Billing source discrepancy','business':business,'area':'','projectCode':'','week':'','outstandingCents':None,
           'sources':[review['filename']],'detail':review['reason'],'nextAction':'Resolve the conflicting or incomplete source document before using its total.'})
     for r in tracking.get('unmatchedRemittances',[]):
+        from kinetic_tracking import payment_day
+        evidence_day=payment_day(r.get('invoiceDate'))
+        reference=re.search(r'(\d{6})$',r.get('invoiceRef',''))
+        if not evidence_day and reference:
+            try:evidence_day=datetime.strptime(reference.group(1),'%m%d%y').date().isoformat()
+            except ValueError:pass
+        year=(tracking.get('asOf') or datetime.now(timezone.utc).date().isoformat())[:4]
+        # Owner asked to forget unverified work before this year. Preserve its
+        # evidence privately without turning it into a new collection task.
+        if evidence_day and evidence_day[:4]<year:continue
         items.append({'kind':'Remittance needs billing evidence','business':business,'area':'','projectCode':r['projectCode'],'week':'',
           'outstandingCents':None,'reportedCents':r['amountCents'],'sources':[r.get('sourceFile','')],
+          'sourceKey':r.get('sourceKey'),
           'references':[r.get('paymentNumber','')+' · '+r.get('invoiceRef','')],
           'detail':'A remittance exists, but a unique matching customer bill has not been established. This is not an unpaid-bill flag.',
           'nextAction':'Locate the customer billing or recap named on this notice.'})

@@ -257,7 +257,7 @@ def report(db):
         for i,line in enumerate(d['lines']):
             source=d.get('source') or {};stamp=source.get('sentAt') or source.get('receivedAt') or ''
             notice_date=stamp[:10] if re.fullmatch(r'\d{4}-\d{2}-\d{2}',stamp[:10]) else None
-            item={**line,'paymentNumber':d['paymentNumber'],'paymentDate':d['paymentDate'],'noticeDate':notice_date,'sourceFile':d['filename'],'key':d['digest']+':'+str(i)}
+            item={**line,'paymentNumber':d['paymentNumber'],'paymentDate':d['paymentDate'],'noticeDate':notice_date,'sourceFile':d['filename'],'sourceKey':source.get('privateMessageKey'),'key':d['digest']+':'+str(i)}
             (receipts if line['projectCode'] in known else unallocated).append(item)
     # Repeated PDF exports with the same payment identity are counted once.
     by_payment={};conflicts=[]
