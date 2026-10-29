@@ -57,6 +57,8 @@ def build(docs,today=None):
         t=reconcile([d for d in unique if d['projectCode']==project],[r for r in receipts if r['projectCode']==project],today)
         weeks+=t['weeks'];unmatched+=t['unmatchedRemittances']
         models.append({'projectCode':project,'area':project_areas.get(project,''),'notice':t['model'],'payment':t['paymentModel']})
+    for row in weeks:
+        for key in ('lines','records','source'):row.pop(key,None)
     review += [{'filename':str(key),'reason':'Conflicting remittance versions; excluded.'} for key in conflicts]
     return {'currency':'USD','invoices':unique,'review':review,'revenueCents':sum(d['amountCents'] for d in unique),
             'receiptsCents':sum(w['reportedCents'] for w in weeks),

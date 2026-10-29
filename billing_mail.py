@@ -309,7 +309,8 @@ def handle(store, db, payload):
     if op=='financials':
         from financial_report import report
         from billing_recaps import report as recap_report
-        return {**report(db),'recaps':recap_report(db)}
+        from spectrum_tracking import report as spectrum_report
+        return {**report(db),'recaps':recap_report(db),'spectrumRemittances':spectrum_report(db)}
     key=str(payload['sheetId'])+':'+str(payload['rowId'])
     if op=='review_pricing':raise ValueError('Billing review shows unpriced files. Prices are added only when sending.')
     with db() as c:
