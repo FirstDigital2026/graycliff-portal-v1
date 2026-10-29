@@ -1,6 +1,6 @@
 """Resolve summary cost codes only from reconciled, full-code recap detail."""
 import re
-from collections import defaultdict
+from collections import defaultdict, Counter
 from decimal import Decimal
 import kinetic_finance as k
 
@@ -19,7 +19,7 @@ def enrich(doc,pages):
         for page in pages:
             if page.get('invoiceBody'):continue
             versions=[]
-            for text in [page.get('recapBody',''),page.get('text','')]:
+            for text in [page.get('recapRows',''),page.get('recapBody',''),page.get('text','')]:
                 found=[]
                 for raw in text.splitlines():
                     compact=fingerprint(raw)
@@ -36,10 +36,13 @@ def enrich(doc,pages):
                     if not matches:continue
                     costs=[k.COST.get(c) for c in matches]
                     if not all(costs) or len({c['rate'] for c in costs})!=1:continue
-                    match=re.search(r'([\d,ISOl|]+(?:\.\d+)?)\s+\$([\d,.]+\.\d{2})\s*\|?\s*$',raw,re.I)
+                    match=re.search(r'([\d,ISOl|]+(?:\.\d+)?)\s+\$(\d[\d,. ]*\d)\s*\|?\s*$',raw,re.I)
                     if not match:continue
-                    q=Decimal(match[1].upper().replace(',','').translate(str.maketrans({'I':'1','S':'5','O':'0','L':'1','|':'1'})));whole,cents=match[2].rsplit('.',1)
-                    amount=k.money(re.sub('[,.]','',whole)+'.'+cents)
+                    if '.' not in match[2]:continue
+                    q=Decimal(match[1].upper().replace(',','').translate(str.maketrans({'I':'1','S':'5','O':'0','L':'1','|':'1'})))
+                    # OCR can split or misplace currency separators. Keep every
+                    # digit; cents, quantity/rate and whole-family totals must agree.
+                    amount=int(re.sub(r'\D','',match[2]))
                     rates={doc['lines'][i].get('rateCents') for i in indices}
                     if len(rates)!=1 or None in rates or k.money(q*Decimal(next(iter(rates)))/100)!=amount:continue
                     found.append({'code':matches[0] if len(matches)==1 else ' / '.join(matches),'codeCandidates':matches,
@@ -47,7 +50,17 @@ def enrich(doc,pages):
                                     'rateCardAmountCents':None,'subCostEstimateCents':k.money(q*Decimal(costs[0]['rate'])),
                                     'subRateCents':k.money(costs[0]['rate']),'description':raw,'costCodeSourcePage':page['page']})
                 versions.append(found)
-            details+=max(versions,key=len)
+            # Combine independently validated rows without counting repeated OCR
+            # reads twice. Preserve legitimate identical rows by their max count.
+            counts=Counter();examples={}
+            for version in versions:
+                seen=Counter()
+                for line in version:
+                    sig=(line['subRateCents'],line['quantity'],line['amountCents'])
+                    seen[sig]+=1
+                    if sig not in examples or len(line['codeCandidates'])<len(examples[sig]['codeCandidates']):examples[sig]=line
+                counts|=seen
+            details += [examples[sig] for sig,count in counts.items() for _ in range(count)]
         if not details:continue
         if sum(Decimal(l['quantity']) for l in details)!=sum(Decimal(doc['lines'][i]['quantity']) for i in indices):continue
         if sum(l['amountCents'] for l in details)!=sum(doc['lines'][i]['amountCents'] for i in indices):continue

@@ -6,6 +6,15 @@ from commercial_spectrum import parse
 
 
 class FullCodes(unittest.TestCase):
+    def test_independent_reads_merge_without_double_counting_or_losing_identical_rows(self):
+        doc={'amountCents':4000,'lines':[{'code':'T','codeCandidates':['TEST1','TEST2'],'quantity':'20','amountCents':4000,'rateCents':200,'subCostEstimateCents':None}]}
+        pages=[{'page':2,'recapBody':'TEST1 Work 4 $8.00\nTEST1 Work 4 $8.00\nTEST2 Work 6 $12.0 0','recapRows':'TEST2 Work 6 $12.00\nTEST2 Work 6 $12.00'}]
+        with patch.object(k,'COST',{'TEST1':{'rate':'1.00'},'TEST2':{'rate':'1.50'}}):
+            d=enrich(doc,pages)
+            self.assertEqual(len(d['lines']),4)
+            self.assertEqual(sum(l['subCostEstimateCents'] for l in d['lines']),2600)
+            pages[0]['recapRows']='TEST2 Work 7 $14.00'
+            self.assertIsNone(enrich(doc,pages)['lines'][0]['subCostEstimateCents'])
     def test_full_recap_must_match_summary_quantity_and_amount(self):
         doc={'amountCents':2000,'lines':[{'code':'T','codeCandidates':['TEST1','TEST2'],'quantity':'10','amountCents':2000,'rateCents':200,'subCostEstimateCents':None}]}
         pages=[{'page':2,'recapBody':'TEST1 Work 100.00% 4 $8.00\nTEST2 Work 100.00% 6 $12.00'}]

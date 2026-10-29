@@ -1,5 +1,5 @@
 """Read image-only billing PDFs privately, with exact financial reconciliation."""
-import json,re,subprocess,tempfile
+import json,re,subprocess,tempfile,os,gc
 from pathlib import Path
 from decimal import Decimal
 import kinetic_finance as k
@@ -39,7 +39,7 @@ def scanned_invoice(pages,alternative=False):
         rawlines=body.splitlines()
         if alternative:
             financial=[raw for raw in rawlines if '$' in raw and not re.search(r'\bTotal:',raw,re.I)]
-            alternate=[raw for raw in page.get('financeBody','').splitlines() if re.fullmatch(r'[\d$S,.\s|Il!:]+',raw.strip()) and re.search(r'\d[,.]\d{2}',raw)]
+            alternate=[raw for raw in page.get('financeBody','').splitlines() if re.fullmatch(r'[\d$S,.\s|Il!:()\-]+',raw.strip()) and re.search(r'\d[,.]\d{2}',raw)]
             if len(alternate)==len(financial):
                 # Pair rows only when both independent reads found the same
                 # row count. Keep the code from the full-width read.
@@ -51,9 +51,15 @@ def scanned_invoice(pages,alternative=False):
             # to a Kinetic work code, regardless of the town printed nearby.
             if not re.match(r'^[A-Z0-9(]',raw,re.I):continue
             final=amounts[-1];actual=scan_money(final.group(1));rate=None;q=None
+            # Accounting parentheses are signed credits, not positive revenue.
+            # Require both sides and retain the independent quantity/rate check.
+            before=raw[:final.start()].rstrip();after=raw[final.end():].lstrip()
+            credit=before.endswith('(') and after.startswith(')')
+            if before.endswith('(')!=after.startswith(')'):raise ValueError('Scanned amount sign is ambiguous')
+            if credit:actual=-actual
             if len(amounts)>=2:
                 rate=scan_money(amounts[-2].group(1))
-                qty=raw[amounts[-2].end():final.start()].strip().strip(':!')
+                qty=raw[amounts[-2].end():final.start()].strip().rstrip('(').strip().strip(':!')
                 qty={'I':'1','|':'1','l':'1'}.get(qty,qty)
                 if re.fullmatch(r'-?[\d,]+(?:\.\d+)?',qty):q=Decimal(qty.replace(',',''))
             else:
@@ -76,6 +82,17 @@ def scanned_invoice(pages,alternative=False):
     return {'kind':'invoice','sourceType':'automatic private OCR','business':'Kinetic','projectCode':next(iter(projects)).upper(),'week':k.date(y,m,d).isoformat(),'amountCents':total,'lines':lines}
 
 def read_pages(data):
+    # A service worker and an administrative retry must never run OCR together.
+    # The OS releases this lock even if the reader exits unexpectedly.
+    if os.name=='posix':
+        import fcntl
+        with open(Path(tempfile.gettempdir())/'graycliff-commercial-ocr.lock','a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            try:return _read_pages(data)
+            finally:fcntl.flock(lock,fcntl.LOCK_UN)
+    return _read_pages(data)
+
+def _read_pages(data):
     import pypdfium2 as pdfium
     with tempfile.TemporaryDirectory(prefix='private-commercial-') as folder:
         root=Path(folder);manifest=[]
@@ -88,6 +105,8 @@ def read_pages(data):
                 bitmap=page.render(scale=2);im=bitmap.to_pil();low=root/f'page-{i+1}-low.png';im.save(low)
                 item.update(lowPath=str(low),lowWidth=im.width,lowHeight=im.height);manifest.append(item);im.close();bitmap.close();page.close()
         finally:doc.close()
+        # Release page/bitmap buffers before starting the OCR subprocess.
+        gc.collect()
         path=root/'manifest.json';path.write_text(json.dumps(manifest))
         result=subprocess.run(['node','--max-old-space-size=160',str(Path(__file__).with_name('commercial_ocr.cjs')),str(path)],capture_output=True,text=True,timeout=600,check=True)
         pages=json.loads(result.stdout)

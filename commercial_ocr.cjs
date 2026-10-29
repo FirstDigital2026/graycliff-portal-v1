@@ -10,7 +10,7 @@ const {createWorker}=require(process.env.COMMERCIAL_OCR_MODULE||'./deployment/pd
   for(const page of manifest){
    await worker.setParameters({tessedit_pageseg_mode:'3'});
    const full=(await worker.recognize(page.path)).data.text;
-   let body='',finance='',recap='';
+   let body='',finance='',recap='',recapRows='';
    if(/subcontractor\s+invoice/i.test(full)){
     await worker.setParameters({tessedit_pageseg_mode:'6'});
     const top=Math.floor(page.height*(page.page===1?.35:.30));
@@ -19,9 +19,24 @@ const {createWorker}=require(process.env.COMMERCIAL_OCR_MODULE||'./deployment/pd
    }
    if(!body&&/Week\s+Ending/i.test(full)){
     await worker.setParameters({tessedit_pageseg_mode:'6'});
-    recap=(await worker.recognize(page.path)).data.text;
+    const result=(await worker.recognize(page.path,{}, {tsv:true})).data;
+    recap=result.text;
+    const groups=new Map();
+    for(const row of (result.tsv||'').split('\n').slice(1)){
+     const fields=row.split('\t');if(fields.length<12||!fields[11].trim())continue;
+     const key=fields.slice(1,5).join('-');if(!groups.has(key))groups.set(key,[]);groups.get(key).push(fields);
+    }
+    const rows=[];
+    for(const words of groups.values()){
+     if(!/^(?:BFOV|BMG?60)/i.test(words.map(w=>w[11]).join(' ')))continue;
+     if(rows.length>=200)throw new Error('Recap row limit');
+     const top=Math.max(0,Math.min(...words.map(w=>+w[7]))-8),bottom=Math.min(page.height,Math.max(...words.map(w=>+w[7]+ +w[9]))+8);
+     await worker.setParameters({tessedit_pageseg_mode:'7'});
+     rows.push((await worker.recognize(page.path,{rectangle:{left:Math.floor(page.width*.028),top,width:Math.floor(page.width*.942),height:bottom-top}})).data.text.trim());
+    }
+    recapRows=rows.join('\n');
    }
-   out.push({page:page.page,text:full,invoiceBody:body,financeBody:finance,recapBody:recap});
+   out.push({page:page.page,text:full,invoiceBody:body,financeBody:finance,recapBody:recap,recapRows});
   }
  }finally{await worker.terminate();}
  process.stdout.write(JSON.stringify(out));

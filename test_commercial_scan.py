@@ -24,6 +24,13 @@ class PrivateScans(unittest.TestCase):
         self.assertEqual(scan.scanned_invoice(p,alternative=True)['amountCents'],1000)
         p[0]['financeBody']+='\n$4.00 1 $4.00'
         with self.assertRaises(ValueError):scan.scanned_invoice(p,alternative=True)
+    def test_accounting_credit_must_match_signed_quantity_and_total(self):
+        body='TEST1 Work $2.50 10 $25.00\nTEST1 Credit $2.50 -2 ($5.00)\nTotal: $20.00'
+        doc=scan.scanned_invoice(self.page(body))
+        self.assertEqual(doc['amountCents'],2000)
+        self.assertEqual(doc['lines'][1]['amountCents'],-500)
+        with self.assertRaises(ValueError):scan.scanned_invoice(self.page(body.replace('-2','2')))
+        with self.assertRaises(ValueError):scan.scanned_invoice(self.page(body.replace('($5.00)','($5.00')))
     def test_unknown_code_never_becomes_kinetic_by_town(self):
         with self.assertRaises(ValueError):scan.scanned_invoice(self.page('OTHER Lewisville $2.50 4 $10.00\nTotal: $10.00'))
     def mime(self):
