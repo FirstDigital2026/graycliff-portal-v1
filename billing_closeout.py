@@ -43,7 +43,7 @@ def jobs(store):
             v=vals(sheet,row)
             if not v.get('Task Name') or v.get('Status')=='Canceled':continue
             canonical=str(v.get('Portal Billing Source Sheet') or sid)+':'+str(v.get('Portal Billing Source Row') or row['id'])
-            item={'title':v['Task Name'],'sourceKey':canonical,'sheetId':canonical.split(':')[0],'rowId':canonical.split(':')[1],'jobKey':str(sid)+':'+str(row['id']),
+            item={'title':v['Task Name'],'sourceKey':canonical,'sheetId':canonical.split(':')[0],'rowId':canonical.split(':')[1],'jobKey':area.lower()+':'+str(row['id']),
                   'jobStatus':v.get('Status',''),'billingStatus':v.get('Portal Billing Status',''),'area':area}
             # A transferred history row keeps its original billing identity.
             if canonical not in result or area=='History':result[canonical]=item

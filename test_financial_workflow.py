@@ -33,9 +33,10 @@ class WorkflowTests(unittest.TestCase):
         m=EmailMessage();m['Date']='Wed, 28 Oct 2026 13:00:00 -0400';m['From']='jason.mosqueda@firstdigitalsc.com';m['To']='customer@graycliffent.com';m.set_content('Billing attached.')
         m.add_attachment(workbook(),maintype='application',subtype='octet-stream',filename='Work Completed Spreadsheet (10 Main St).xlsx');return m.as_bytes()
     def message(self):return {'id':'mail','subject':'Billing 10 Main St','from':{'emailAddress':{'address':'jason.mosqueda@firstdigitalsc.com'}},'toRecipients':[{'emailAddress':{'address':'customer@graycliffent.com'}}],'body':{'content':'Billing attached.'},'receivedDateTime':'2026-10-28T17:00:00Z'}
-    def job(self,status='Field complete'):return {'title':'10 Main Street','sourceKey':'123:456','sheetId':'123','rowId':'456','jobKey':'123:456','jobStatus':status}
+    def job(self,status='Field complete'):return {'title':'10 Main Street','sourceKey':'123:456','sheetId':'123','rowId':'456','jobKey':'columbia:456','jobStatus':status}
     def test_verified_closeout_retention_before_bridge_and_replay(self):
         def bridge(*args):
+            self.assertEqual(args[3]['jobKey'],'columbia:456')
             with self.db() as c:self.assertIsNotNone(c.execute('SELECT mime FROM private_billing_closeout_messages').fetchone())
             return {'ok':True}
         with patch('graph_import.get_message_mime',return_value=self.source()),patch.object(b,'jobs',return_value=[self.job()]),patch('mail_automation.bridge',side_effect=bridge) as call:
@@ -57,5 +58,11 @@ class WorkflowTests(unittest.TestCase):
         with patch('graph_import.get_message_mime',return_value=self.source()),patch.object(b,'jobs',return_value=[self.job()]),patch('mail_automation.bridge') as call:
             with self.assertRaises(ValueError):b.ingest(None,self.db,self.message(),[],'c'*64,'token')
             call.assert_not_called()
+    def test_portal_keys_and_canonical_financial_keys_are_distinct(self):
+        store=MagicMock()
+        def sheet(sid,force=False):
+            return {'columns':[{'id':1,'title':'Task Name'},{'id':2,'title':'Status'}],'rows':[{'id':456,'cells':[{'columnId':1,'value':'10 Main St'},{'columnId':2,'value':'Complete'}]}]} if sid==8067039099834244 else {'columns':[],'rows':[]}
+        store.get_sheet.side_effect=sheet
+        item=b.jobs(store)[0];self.assertEqual(item['jobKey'],'columbia:456');self.assertEqual(item['sourceKey'],'8067039099834244:456')
 
 if __name__=='__main__':unittest.main()
