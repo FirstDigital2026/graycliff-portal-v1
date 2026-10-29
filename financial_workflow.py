@@ -1,12 +1,15 @@
 """Owner-only processing receipts and collections actions; no bank assertions."""
 import json,time,hashlib
 from datetime import datetime,timezone
+from email.parser import BytesHeaderParser
+from email import policy
 
 
 def initialize(db):
     with db() as c:
         c.execute('CREATE TABLE IF NOT EXISTS financial_processing (message_key TEXT PRIMARY KEY, kind TEXT NOT NULL, subject TEXT NOT NULL, received_at TEXT NOT NULL, updated_at REAL NOT NULL, state TEXT NOT NULL, detail TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS financial_monitor (name TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        c.execute("INSERT OR IGNORE INTO financial_monitor VALUES ('started',?)",(json.dumps(time.time()),))
 
 
 def record(db,key,kind,state,detail='',subject='',received=''):
@@ -30,6 +33,16 @@ def processing(db,now=None):
         events={r['message_key']:dict(r) for r in c.execute('SELECT * FROM financial_processing ORDER BY updated_at DESC LIMIT 100')}
         tables={r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'private_commercial_messages' in tables:
+            # Backfill only MIME headers for older archived messages; never load
+            # attachments or run OCR in an owner dashboard request.
+            for old in c.execute('''SELECT m.message_key,substr(m.mime,1,16384) headers,m.created_at
+                FROM private_commercial_messages m LEFT JOIN financial_processing p ON p.message_key=m.message_key
+                WHERE p.message_key IS NULL ORDER BY m.created_at DESC LIMIT 100''').fetchall():
+                header=BytesHeaderParser(policy=policy.default).parsebytes(old['headers'])
+                item={'message_key':old['message_key'],'kind':'Financial PDF','subject':str(header.get('Subject','Saved financial email')),
+                      'received_at':old['created_at'],'updated_at':0,'state':'Received','detail':'Private original retained.'}
+                events[old['message_key']]=item
+                c.execute('INSERT OR IGNORE INTO financial_processing VALUES (?,?,?,?,?,?,?)',tuple(item[k] for k in ('message_key','kind','subject','received_at','updated_at','state','detail')))
             for r in c.execute('''SELECT m.message_key,m.state,m.detail,m.created_at,j.state job_state,j.attempts,j.last_attempt
               FROM private_commercial_messages m LEFT JOIN private_commercial_jobs j ON j.message_key=m.message_key ORDER BY m.created_at DESC LIMIT 100'''):
                 key=r['message_key'];job=r['job_state'];attempts=r['attempts'] or 0
@@ -42,14 +55,15 @@ def processing(db,now=None):
                 if intake_error:item.update(state='Needs attention',detail=intake_detail)
                 if job=='Reading' and now-(r['last_attempt'] or now)>900:item.update(state='Needs attention',detail='PDF reader was interrupted; original is retained privately. Automatic recovery is pending.')
         saved=c.execute("SELECT value FROM financial_monitor WHERE name='inbox'").fetchone()
+        started=json.loads(c.execute("SELECT value FROM financial_monitor WHERE name='started'").fetchone()[0])
     health=json.loads(saved[0]) if saved else None
     rows=sorted(events.values(),key=lambda r:(r.get('received_at',''),r['updated_at']),reverse=True)[:100]
     for row in rows:
         if row.get('kind')=='Issued billing':row['sourceKey']=row['message_key']
         if row['state']=='Processing' and now-row['updated_at']>900:row.update(state='Needs attention',detail='Processing stopped reporting progress. Original retained; check before retrying.')
     problems=[r for r in rows if r['state']=='Needs attention']
-    stale=bool(health and now-health['checkedAt']>300)
-    health_error=bool(health and (not health['ok'] or stale))
+    stale=now-(health['checkedAt'] if health else started)>300
+    health_error=stale or bool(health and not health['ok'])
     return {'rows':rows,'attentionCount':len(problems)+int(health_error),'activeCount':sum(r['state'] in ('Received','Processing','Retrying') for r in rows),
             'completedCount':sum(r['state']=='Completed' for r in rows),'monitor':health,'monitorStale':stale,
             'monitorIssue':'Inbox checks have not reported in over five minutes.' if stale else (health['detail'] if health_error else '')}
