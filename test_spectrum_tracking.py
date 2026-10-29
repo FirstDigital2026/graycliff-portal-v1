@@ -32,6 +32,16 @@ class SpectrumTrackingTests(unittest.TestCase):
         r=build([invoice,recap,remit]);self.assertEqual(len(r['tracking']['unmatchedRemittances']),1)
         self.assertEqual(r['tracking']['flagCount'],0)
 
+    def test_lower_recap_does_not_hide_short_payment_on_issued_invoice(self):
+        invoice,recap,remit=self.fixtures()
+        # Establish the area/project relationship with a separate fully matching week.
+        earlier=[{**invoice,'week':'2025-12-27'},{**recap,'week':'2025-12-27'}]
+        recap={**recap,'amountCents':3500};remit['lines'][0]['amountCents']=3500
+        r=build([invoice,recap,remit]+earlier)
+        row=next(w for w in r['tracking']['weeks'] if w['week']=='2026-01-03')
+        self.assertEqual(row['amountCents'],4000);self.assertEqual(row['differenceCents'],500)
+        self.assertTrue(row['flagged']);self.assertTrue(r['review'])
+
     def test_legacy_invoice_without_rate_and_accounting_credit(self):
         text='First Digital Graycliff\nFor Week Ending 1/3/2026\nJob#: Bill To:\n95603000 - FLORENCE, SC\nFS01+ Work 2 $40.00\nTotal: $40.00'
         self.assertEqual(parse(text,'test.pdf')['amountCents'],4000)

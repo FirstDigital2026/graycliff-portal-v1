@@ -36,9 +36,15 @@ def build(docs,today=None):
     for d in all_invoices:groups[(d['projectCode'],d['week'])].append(d)
     unique=[]
     for key,versions in groups.items():
-        if len({d['amountCents'] for d in versions})!=1:
+        issued=[d for d in versions if d['kind']=='spectrum_invoice']
+        authoritative=issued or versions
+        if len({d['amountCents'] for d in authoritative})!=1:
             review.append({'filename':versions[0]['filename'],'reason':'Conflicting billing totals for '+str(key)+'; excluded.'});continue
-        d=next((d for d in versions if d['kind']=='spectrum_invoice'),versions[0])
+        d=authoritative[0]
+        recap_amounts={v['amountCents'] for v in versions if v['kind']=='spectrum_recap'}
+        if issued and any(amount!=d['amountCents'] for amount in recap_amounts):
+            amounts=', '.join(f'${amount/100:,.2f}' for amount in sorted(recap_amounts))
+            review.append({'filename':d['filename'],'reason':f"Week ending {d['week']}: invoice ${d['amountCents']/100:,.2f}; recap {amounts}. Remittance comparison uses the issued invoice."})
         unique.append({**d,'area':project_areas.get(d['projectCode'],'')})
     projects={d['projectCode'] for d in invoices};payments={};conflicts=set()
     for d in docs:
