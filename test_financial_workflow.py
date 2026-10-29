@@ -75,5 +75,14 @@ class WorkflowTests(unittest.TestCase):
             return {'columns':[{'id':1,'title':'Task Name'},{'id':2,'title':'Status'}],'rows':[{'id':456,'cells':[{'columnId':1,'value':'10 Main St'},{'columnId':2,'value':'Complete'}]}]} if sid==8067039099834244 else {'columns':[],'rows':[]}
         store.get_sheet.side_effect=sheet
         item=b.jobs(store)[0];self.assertEqual(item['jobKey'],'columbia:456');self.assertEqual(item['sourceKey'],'8067039099834244:456')
+    def test_archived_issued_bills_keep_area_for_recap_matching(self):
+        import billing_recaps,financial_report
+        b.initialize(self.db)
+        record={**self.job(),'source':'Issued work completed spreadsheet','area':'Columbia','amountCents':38290,'sentAt':'2026-10-28T17:00:00Z'}
+        with self.db() as c:
+            c.execute('CREATE TABLE billing_package_outbox (id TEXT,job_key TEXT,snapshot TEXT,sent_at TEXT,state TEXT,created_at TEXT)')
+            c.execute('INSERT INTO financial_spreadsheet_imports VALUES (?,?,?)',('123:456',json.dumps(record),0))
+        self.assertEqual(financial_report.report(self.db)['jobs'][0]['area'],'Columbia')
+        self.assertEqual(billing_recaps.current_jobs(self.db)[0]['area'],'Columbia')
 
 if __name__=='__main__':unittest.main()

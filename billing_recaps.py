@@ -125,7 +125,7 @@ def current_jobs(db):
         if not c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='billing_package_outbox'").fetchone(): return []
     # Verified issued customer billing on/after activation can become recap items.
     jobs=report(db)['jobs']
-    return [{**j,'billedDay':day(j.get('sentAt')),'area':{'2515846899388292':'Florence','8067039099834244':'Columbia'}.get(str(j.get('sheetId')),'')}
+    return [{**j,'billedDay':day(j.get('sentAt')),'area':j.get('area') or {'2515846899388292':'Florence','8067039099834244':'Columbia'}.get(str(j.get('sheetId')),'')}
             for j in jobs if (j.get('packageId') or j.get('source')=='Issued work completed spreadsheet') and day(j.get('sentAt'))>=START_DAY]
 
 

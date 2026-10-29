@@ -46,5 +46,6 @@ def report(db):
         if not re.fullmatch(r'\d+:\d+',key) or not isinstance(item.get('amountCents'),int):continue
         if key in indexed and indexed[key]['amountCents'] is not None:continue
         safe={k:item[k] for k in ('sourceKey','sheetId','rowId','title','sentAt','amountCents','lines','source','sourceFile','sourceCell','fileSha256','onCall','classificationBasis') if k in item}
+        if item.get('area') in ('Columbia','Florence'):safe['area']=item['area']
         indexed[key]=safe
     return {'jobs':list(indexed.values()),'excludedTestSends':excluded,'currency':'USD'}

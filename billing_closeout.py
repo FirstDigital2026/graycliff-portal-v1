@@ -48,7 +48,7 @@ def jobs(store):
             if not v.get('Task Name') or v.get('Status')=='Canceled':continue
             canonical=str(v.get('Portal Billing Source Sheet') or sid)+':'+str(v.get('Portal Billing Source Row') or row['id'])
             item={'title':v['Task Name'],'sourceKey':canonical,'sheetId':canonical.split(':')[0],'rowId':canonical.split(':')[1],'jobKey':area.lower()+':'+str(row['id']),
-                  'jobStatus':v.get('Status',''),'billingStatus':v.get('Portal Billing Status',''),'area':area}
+                  'jobStatus':v.get('Status',''),'billingStatus':v.get('Portal Billing Status',''),'area':v.get('Portal Market',area) if area=='History' else area}
             # A transferred history row keeps its original billing identity.
             if canonical not in result or area=='History':result[canonical]=item
     return list(result.values())
@@ -78,6 +78,10 @@ def ingest(store,db,message,attachments,key,token):
         record=sheets.extract_total(part.get_payload(decode=True) or b'')
         record.update(job);record.update(source='Issued work completed spreadsheet',sourceFile=filename,sentAt=sent,
                                         subject=message.get('subject',''),privateMessageKey=key)
+        if record.get('area') not in ('Columbia','Florence'):
+            recipients=(message.get('toRecipients') or [])+(message.get('ccRecipients') or [])
+            markets={a.title() for r in recipients for a in ('columbia','florence') if r.get('emailAddress',{}).get('address','').lower()=='invoice-'+a+'@graycliffent.com'}
+            if len(markets)==1:record['area']=markets.pop()
         with db() as c:prior=c.execute('SELECT snapshot FROM financial_spreadsheet_imports WHERE source_key=?',(job['sourceKey'],)).fetchone()
         if prior and json.loads(prior['snapshot']).get('amountCents')!=record['amountCents']:raise ValueError('Issued amount conflicts with previously retained billing; office review required.')
         from financial_report import report
