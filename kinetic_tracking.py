@@ -33,6 +33,11 @@ def reconcile(invoices, receipts, today=None):
         basis = 'Invoice reference and project'
         if dated is not None:
             candidates = dated
+            if not candidates and (printed:=payment_day(receipt.get('invoiceDate'))):
+                proven=[r for r in rows if r['projectCode']==receipt['projectCode'] and r['week']==printed and r['amountCents']==receipt['amountCents']]
+                if len(proven)==1:
+                    candidates=proven
+                    basis='Printed invoice date, project and exact amount; invoice reference date differs'
         else:
             exact = [r for r in candidates if receipt.get('invoiceRef') in
                      [r.get('invoiceRef'), r.get('invoiceNumber')]

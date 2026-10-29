@@ -103,7 +103,20 @@ def remittance(text):
     if not payment or not projects or len(projects)!=len(amounts) or len(refs)!=len(projects) or not dates or not total:raise ValueError('Remittance row mapping needs review')
     totals=re.findall(r'-?[\d,]+\.\d{2}',total.group(1)); expected=money(totals[-1]) if totals else None
     if sum(money(v) for v in amounts)!=expected:raise ValueError('Remittance does not reconcile')
-    return {'kind':'remittance','paymentNumber':payment.group(1),'paymentDate':dates[-1],'amountCents':expected,'lines':[{'projectCode':p,'invoiceRef':r,'amountCents':money(a)} for p,r,a in zip(projects,refs,amounts)]}
+    lines=[{'projectCode':p,'invoiceRef':r,'amountCents':money(a)} for p,r,a in zip(projects,refs,amounts)]
+    # Preserve the separately printed invoice date. A typo in the reference must
+    # not erase this stronger row-level evidence or silently rewrite the source.
+    from kinetic_tracking import payment_day
+    row_dates={}
+    for raw in page.splitlines():
+        m=re.match(r'^\s*(\d{1,2}/\d{1,2}/\d{2,4})\s+(\d{3}[A-Z0-9]{4,})\s+0\.00\s+(-?[\d,]+\.\d{2})\s+0\.00\s+(.+?)\s*$',raw)
+        if m:
+            stamp,p,a,r=m.groups();parsed=payment_day(stamp)
+            if parsed:row_dates.setdefault((p,r,money(a)),set()).add(parsed)
+    for line in lines:
+        found=row_dates.get((line['projectCode'],line['invoiceRef'],line['amountCents']),set())
+        if len(found)==1:line['invoiceDate']=next(iter(found))
+    return {'kind':'remittance','paymentNumber':payment.group(1),'paymentDate':dates[-1],'amountCents':expected,'lines':lines}
 def save_text(db,text,filename,digest,source=None):
     initialize(db)
     with db() as c:

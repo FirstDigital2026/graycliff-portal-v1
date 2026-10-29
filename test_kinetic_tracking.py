@@ -51,6 +51,25 @@ class TrackingTests(unittest.TestCase):
         r=reconcile([self.invoice('2026-01-03')],[self.receipt('P-011026')])
         self.assertEqual(len(r['unmatchedRemittances']),1);self.assertEqual(r['weeks'][0]['reportedCents'],0)
 
+    def test_reference_typo_requires_independent_printed_date_and_exact_amount(self):
+        invoice=self.invoice('2026-01-03')
+        receipt={**self.receipt('P-012326'),'invoiceDate':'2026-01-03'}
+        row=reconcile([invoice],[receipt])['weeks'][0]
+        self.assertEqual(row['differenceCents'],0)
+        self.assertIn('Printed invoice date',row['matchBasis'][0])
+        receipt['amountCents']=9000
+        self.assertEqual(len(reconcile([invoice],[receipt])['unmatchedRemittances']),1)
+        receipt['amountCents']=10000
+        r=reconcile([invoice,self.invoice('2026-01-23')],[receipt])
+        self.assertEqual(next(w for w in r['weeks'] if w['week']=='2026-01-03')['reportedCents'],0)
+
+    def test_remittance_parser_preserves_printed_invoice_date(self):
+        import kinetic_finance as k
+        text='127675\n0.0010.0010.00\nE12345\n1/3/26   95603000 0.00 10.00 0.00 FLO-012326\nElectronic Payment - Remittance Advice Page 1 of 1\nPayment Totals 0.00\n1/16/26\n10.00\nInv. Date\nFirst Digital, LLC\nGraycliff Enterprise Solutions'
+        d=k.remittance(text)
+        self.assertEqual(d['lines'][0]['invoiceDate'],'2026-01-03')
+        self.assertEqual(d['lines'][0]['invoiceRef'],'FLO-012326')
+
     def test_repeated_amount_and_other_project_cannot_match(self):
         invoices=[self.invoice('2026-01-03'),self.invoice('2026-01-10')]
         r=reconcile(invoices,[self.receipt('NO-DATE'),self.receipt('P-010326',project='P2')])
