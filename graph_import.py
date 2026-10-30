@@ -35,7 +35,7 @@ DUE_PATTERNS = [
 FLORENCE_CITIES = {
     "florence", "darlington", "hartsville", "scranton", "lake city", "marion",
     "mullins", "dillon", "latta", "timmonsville", "pamplico", "gresham",
-    "effingham", "quinby", "coward", "johnsonville", "hemingway",
+    "effingham", "quinby", "coward", "johnsonville", "hemingway", "bennettsville",
 }
 COLUMBIA_CITIES = {
     "columbia", "lexington", "west columbia", "cayce", "irmo", "chapin",
