@@ -124,7 +124,8 @@ def parse(message, attachments):
     pid = re.search(r'\b(?:PID|PRISM(?:\s+ID)?|PNG|P(?=\s*#))\s*[:#-]?\s*(\d{6,12})(?!\d)', subject,re.I)
     if not pid:
         pid = re.search(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)*["\s]*(\d{7,12})n?\s+\d+\s',subject,re.I)
-    category = category_for_message(subject, body)
+    approval = formats.current_crq(message, body)
+    category = approval.get('type') or category_for_message(subject, body)
     crq = category == 'CRQ'
     outage = category == 'Outage'
     if not ntp and not pid and not crq and not outage and not formats.PUSH.search(subject):
@@ -164,6 +165,7 @@ def parse(message, attachments):
     if address and not parsed.address:
         parsed.address = address.group(1).strip()
     appointment = formats.appointment(body) if crq else {}
+    if approval.get('planned_date'): appointment['planned_date'] = approval['planned_date']
     if appointment.get('address') and not parsed.address:
         parsed.address=appointment['address'];parsed.city=appointment['city']
     if outage:
@@ -225,7 +227,7 @@ def parse(message, attachments):
     return {'pid':parsed.prism,'wo':parsed.work_order,'address':parsed.address,
             'city':parsed.city,'market':parsed.market,'ntp_due':parsed.due_date,
             'type':category,
-            'subject':subject,'body':body,'crq_id':formats.crq_id(subject),'incident_id':formats.incident_id(subject),'planned_date':appointment.get('planned_date','')}
+            'subject':subject,'body':body,'crq_id':formats.crq_id(subject),'incident_id':formats.incident_id(subject),'planned_date':appointment.get('planned_date',''),'work_shift':approval.get('work_shift','')}
 
 def normalized_address(text):
     text = str(text).lower()
@@ -382,7 +384,7 @@ def save_message(store, token, message, item, attachments, key, state, db=None):
         if jobtype in {'Standard','Project'}:
             values['Due Date'] = internal_due(item['ntp_due'])
     if jobtype=='CRQ' and item.get('planned_date') and not closed and newer and not old.get('Portal Planning Audit') and not old.get('Portal Office Due Date'):
-        values.update({'Portal Planned Date':item['planned_date'],'Due Date':item['planned_date'],'Portal Work Shift':'Night'})
+        values.update({'Portal Planned Date':item['planned_date'],'Due Date':item['planned_date'],'Portal Work Shift':item.get('work_shift') or 'Night'})
         ensure_columns(store,sid,['Portal Planned Date','Portal Work Shift'])
     thread=str(message.get('conversationId') or '')
     try:
@@ -623,7 +625,7 @@ def run(store, db):
         # Retry recognition holds after parser improvements. Never discard the
         # held source, and never replay an uncertain portal save automatically.
         ledger=store.get_sheet(sid,force=True)
-        holds={str(v.get('Message Key')):v for row in ledger.get('rows',[]) if (v:=vals(ledger,row)).get('State')=='Needs review' and str(v.get('Detail','')).startswith(('Incident email contains multiple possible sites.', 'NTP completion date is missing.'))}
+        holds={str(v.get('Message Key')):v for row in ledger.get('rows',[]) if (v:=vals(ledger,row)).get('State')=='Needs review' and str(v.get('Detail','')).startswith(('Incident email contains multiple possible sites.', 'NTP completion date is missing.', 'Email format needs review: no reliable PID, NTP, CRQ or outage subject.'))}
         retry_keys=set()
         if holds:
             for held in graph.list_folder_messages(token,review,top=40):

@@ -1,11 +1,12 @@
 """Evidence-based recognition of forwarded Spectrum dispatch formats."""
 import base64, email, email.policy, hashlib, re, urllib.parse
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 import graph_import as graph
 
 PUSH = re.compile(r'\bpush[ -]+light\b',re.I)
 NODE = re.compile(r'\b\d[A-Z]\d{1,3}E\b',re.I)
-STREET = r"\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#'\-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY|BLVD|BOULEVARD|CIR|CIRCLE|WAY|PKWY|PARKWAY))(?:\s+(?:EXT|EXTENSION))?(?:\s+(?:N|S|E|W|NE|NW|SE|SW))?"
+STREET = r"\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#'\-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY|BLVD|BOULEVARD|CIR|CIRCLE|WAY|PKWY|PARKWAY|TRACE|TRCE))(?:\s+(?:EXT|EXTENSION))?(?:\s+(?:N|S|E|W|NE|NW|SE|SW))?"
 EXTRA_CITIES = {'blackville':'Columbia','eastover':'Columbia','mcbee':'Florence','cheraw':'Florence','lynchburg':'Florence','aiken':'Columbia','jackson':'Columbia','barnwell':'Columbia','orangeburg':'Columbia','blair':'Columbia','summerton':'Columbia','edgefield':'Columbia','johnston':'Columbia'}
 
 def newer_source(incoming, previous):
@@ -43,6 +44,29 @@ def dispatch_site(body):
         if sites:
             return next(iter(sites.values()))
     return None
+
+def current_crq(message, body):
+    """Use an affirmative approval in the current message, before quoted history."""
+    current = re.split(r'(?im)^\s*(?:From:|Sent:|-----Original Message|Thanks\b|Regards\b|Important:)', body, maxsplit=1)[0][:1200]
+    if not re.search(r'\bCRQ\b', current, re.I) or not re.search(r'\b(?:approved|scheduled|set up)\b', current, re.I):
+        return {}
+    if re.search(r"\b(?:not|pending|awaiting|unapproved|cancelled|canceled)\b", current, re.I):
+        return {}
+    out = {'type': 'CRQ'}
+    if re.search(r'\bday(?:time)?\b', current, re.I): out['work_shift'] = 'Day'
+    elif re.search(r'\bnight(?:time)?\b', current, re.I): out['work_shift'] = 'Night'
+    # An explicit relative day plus month/day is anchored to the received date,
+    # never today's date or the dates of quoted September messages.
+    found = re.search(r'\b(tomorrow|today)\s+(\d{1,2})/(\d{1,2})(?![/\d])', current, re.I)
+    if found and message.get('receivedDateTime'):
+        try:
+            received = datetime.fromisoformat(message['receivedDateTime'].replace('Z', '+00:00')).astimezone(ZoneInfo('America/New_York')).date()
+            planned = received + timedelta(days=found.group(1).lower() == 'tomorrow')
+            if (planned.month, planned.day) == (int(found.group(2)), int(found.group(3))):
+                out['planned_date'] = planned.isoformat()
+        except (ValueError, TypeError): pass
+    return out
+
 
 def appointment(body):
     # Only the first appointment header is current. Quoted older windows cannot win.
