@@ -5,6 +5,7 @@ import html
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -35,7 +36,7 @@ DUE_PATTERNS = [
 FLORENCE_CITIES = {
     "florence", "darlington", "hartsville", "scranton", "lake city", "marion",
     "mullins", "dillon", "latta", "timmonsville", "pamplico", "gresham",
-    "effingham", "quinby", "coward", "johnsonville", "hemingway", "bennettsville",
+    "effingham", "quinby", "coward", "johnsonville", "hemingway", "bennettsville", "hamer",
 }
 COLUMBIA_CITIES = {
     "columbia", "lexington", "west columbia", "cayce", "irmo", "chapin",
@@ -75,18 +76,30 @@ def _request(
     if headers:
         all_headers.update(headers)
     req = urllib.request.Request(url, data=body, headers=all_headers, method=method)
-    try:
-        with urllib.request.urlopen(req, timeout=90) as response:
-            raw = response.read()
-            content_type = response.headers.get("Content-Type", "")
-            if "application/json" in content_type and raw:
-                return json.loads(raw.decode("utf-8"))
-            return raw
-    except urllib.error.HTTPError as exc:
-        payload = exc.read().decode("utf-8", errors="replace")
-        raise GraphImportError(f"Microsoft Graph request failed ({exc.code}): {payload[:1000]}") from exc
-    except urllib.error.URLError as exc:
-        raise GraphImportError(f"Unable to reach Microsoft Graph: {exc}") from exc
+    # Retry only reads: repeating a send or move can create duplicate effects.
+    attempts = 3 if method.upper() == 'GET' else 1
+    for attempt in range(attempts):
+        try:
+            with urllib.request.urlopen(req, timeout=90) as response:
+                raw = response.read()
+                content_type = response.headers.get("Content-Type", "")
+                if "application/json" in content_type and raw:
+                    return json.loads(raw.decode("utf-8"))
+                return raw
+        except urllib.error.HTTPError as exc:
+            payload = exc.read().decode("utf-8", errors="replace")
+            if exc.code in {429, 500, 502, 503, 504} and attempt + 1 < attempts:
+                delay = (exc.headers or {}).get('Retry-After', '')
+                # Honor long throttle windows by leaving the source held.
+                if not str(delay).isdigit() or int(delay) <= 30:
+                    time.sleep(int(delay) if str(delay).isdigit() else 2 ** attempt)
+                    continue
+            raise GraphImportError(f"Microsoft Graph request failed ({exc.code}): {payload[:1000]}") from exc
+        except (urllib.error.URLError, TimeoutError) as exc:
+            if attempt + 1 < attempts:
+                time.sleep(2 ** attempt)
+                continue
+            raise GraphImportError(f"Unable to reach Microsoft Graph: {exc}") from exc
 
 
 def configured() -> bool:
