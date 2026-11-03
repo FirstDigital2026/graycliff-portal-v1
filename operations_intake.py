@@ -17,6 +17,7 @@ import mimetypes
 import io
 import zipfile
 import base64
+import itertools
 from datetime import date, datetime, timedelta, timezone
 import graph_import as graph
 import intake_formats as formats
@@ -584,13 +585,13 @@ def capture_email_files(store,token,message,sid,row_id,attachments,key):
         store.attach_file_to_row(sid,row_id,filename=eml_name,mime_type='message/rfc822',data=raw)
     parts = source_attachments(raw)
     decoded_files = [d for a in attachments if (d:=graph.attachment_bytes(a))] + parts
-    expanded, zip_errors = zip_member_files(decoded_files)
-    decoded_files += expanded
+    zip_errors = []
+    expanded = iter_zip_member_files(decoded_files, zip_errors)
     # Match content before saving either Graph or MIME copies. Outlook often
     # renames a signature image to image001.png in one of those copies.
     signature_hashes={hashlib.sha256(data).hexdigest() for name,mime,data in decoded_files if signature_graphic(name,mime,data)}
     saved_hashes={m.group(1) for n in names if (m:=re.search(r'-([a-f0-9]{10})(?:\.[^.]+)?$',n))}
-    for name,mime,data in decoded_files:
+    for name,mime,data in itertools.chain(decoded_files, expanded):
         if signature_graphic(name,mime,data) or hashlib.sha256(data).hexdigest() in signature_hashes:
             continue
         # Hash content, so revised files with the same filename are retained.
