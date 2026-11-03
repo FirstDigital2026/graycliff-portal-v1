@@ -384,7 +384,7 @@ def save_message(store, token, message, item, attachments, key, state, db=None):
         if jobtype in {'Standard','Project'}:
             values['Due Date'] = internal_due(item['ntp_due'])
     if jobtype=='CRQ' and item.get('planned_date') and not closed and newer and not old.get('Portal Planning Audit') and not old.get('Portal Office Due Date'):
-        values.update({'Portal Planned Date':item['planned_date'],'Due Date':item['planned_date'],'Portal Work Shift':item.get('work_shift') or 'Night'})
+        values.update({'Portal Planned Date':item['planned_date'],'Due Date':item['planned_date'],'Portal Work Shift':item.get('work_shift') or old.get('Portal Work Shift') or 'Night'})
         ensure_columns(store,sid,['Portal Planned Date','Portal Work Shift'])
     thread=str(message.get('conversationId') or '')
     try:

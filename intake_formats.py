@@ -47,6 +47,9 @@ def dispatch_site(body):
 
 def current_crq(message, body):
     """Use an affirmative approval in the current message, before quoted history."""
+    scheduled = cutover_appointment(message, body)
+    if scheduled:
+        return scheduled
     current = re.split(r'(?im)^\s*(?:From:|Sent:|-----Original Message|Thanks\b|Regards\b|Important:)', body, maxsplit=1)[0][:1200]
     if not re.search(r'\bCRQ\b', current, re.I) or not re.search(r'\b(?:approved|scheduled|set up)\b', current, re.I):
         return {}
@@ -66,6 +69,35 @@ def current_crq(message, body):
                 out['planned_date'] = planned.isoformat()
         except (ValueError, TypeError): pass
     return out
+
+
+def cutover_appointment(message, body):
+    """Recognize an explicit forwarded cutover invitation, not quoted discussion."""
+    subject = str(message.get('subject', ''))
+    if not re.search(r'\bcutover\b', subject, re.I):
+        return {}
+    if re.search(r'\b(cancelled|canceled|declined|pending|tentative)\b', subject + '\n' + body, re.I):
+        return {}
+    blocks = re.split(r'(?im)^\s*-----Original Appointment-----\s*$', body)
+    if len(blocks) != 2 or blocks[0].strip():
+        return {}
+    # The first From header belongs to the invitation. Bound it before older history.
+    text = blocks[1].lstrip()
+    text = re.split(r'(?im)\n\s*(?:From:|-----Original Message)', text, maxsplit=1)[0]
+    if not re.search(r'(?im)^Subject:\s*[^\r\n]*\bcutover\b', text):
+        return {}
+    if not re.search(r'\bopen and close CRQ\b', text, re.I):
+        return {}
+    details = appointment(text)
+    if not all(details.get(key) for key in ('address', 'city', 'planned_date')):
+        return {}
+    result = {'type': 'CRQ', 'planned_date': details['planned_date']}
+    when = re.search(r'(?im)^\s*When:\s*([^\r\n]+)', text).group(1)
+    times = re.findall(r'\b(\d{1,2}):(\d{2})\s*(AM|PM)\b', when, re.I)
+    if len(times) == 2:
+        hours = [int(h) % 12 + (12 if mer.upper() == 'PM' else 0) + int(m)/60 for h,m,mer in times]
+        result['work_shift'] = 'Day' if 6 <= hours[0] < hours[1] <= 18 else 'Night'
+    return result
 
 
 def appointment(body):
