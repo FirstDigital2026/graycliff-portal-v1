@@ -300,6 +300,62 @@ def thread_match(store, message):
         raise ValueError('This email chain is linked to multiple jobs. Office review required.')
     return matches[0] if matches else None
 
+def reviewed_cutover_match(store, message):
+    """Reuse an office-confirmed, specific cutover subject when Outlook starts a new chain.
+
+    This can only select one existing CRQ job; it cannot create a job or learn
+    associations from unreviewed mail. Conflicting sites still require review.
+    """
+    def subject_key(value):
+        value = re.sub(r'^(?:(?:RE|FW|FWD):\s*|\[EXTERNAL\]\s*)+', '', str(value).strip(), flags=re.I)
+        return ' '.join(value.casefold().split())
+
+    subject = subject_key(message.get('subject', ''))
+    if not re.fullmatch(r'cutover\s+[\w\'-]+(?:\s+[\w\'-]+)+', subject):
+        return None
+    sender = str(message.get('from', {}).get('emailAddress', {}).get('address', '')).lower()
+    if sender.rsplit('@', 1)[-1] not in {'spectrum.com', 'charter.com', 'graycliffent.com', 'firstdigitalsc.com'}:
+        return None
+    ledger = store.get_sheet(ledger_id(store), force=True)
+    keys = {str(v.get('Job Key', '')) for row in ledger.get('rows', [])
+            if (v := vals(ledger, row)).get('State') == 'Imported'
+            and str(v.get('Detail', '')).startswith('Reviewed in portal by ')
+            and subject_key(v.get('Subject', '')) == subject}
+    keys.discard('')
+    if len(keys) > 1:
+        raise ValueError('This reviewed cutover subject is linked to multiple jobs. Office review required.')
+    if not keys:
+        return None
+    area, rid = next(iter(keys)).split(':', 1)
+    market = area.title()
+    if market not in AREA:
+        return None
+    sheet = store.get_sheet(AREA[market], force=True)
+    rows = [r for r in sheet.get('rows', []) if str(r['id']) == rid]
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    old = vals(sheet, row)
+    if old.get('Portal Job Type') != 'CRQ':
+        return None
+    body = graph._plain_text((message.get('body') or {}).get('content', ''))
+    appointment = formats.appointment(body)
+    if appointment.get('address'):
+        # A title may omit Drive after a street name ending in Trace.
+        address = normalized_address(appointment['address'])
+        titles = {normalized_address(m.group()) for m in re.finditer(formats.STREET, str(old.get('Task Name', '')), re.I)}
+        if address.endswith('tracedr'):
+            address = address[:-2]
+        if address not in titles or (appointment.get('city') and
+                normalized_address(appointment['city']) != normalized_address(old.get('City', ''))):
+            raise ValueError('Appointment location conflicts with the reviewed cutover job. Office review required.')
+    incoming_crq = formats.crq_id(body)
+    existing_crq = str(old.get('Portal CRQ ID') or formats.crq_id(str(old.get('Task Name', ''))+' '+str(old.get('Notes', ''))))
+    if incoming_crq and existing_crq and incoming_crq != existing_crq:
+        raise ValueError('Appointment CRQ conflicts with the reviewed cutover job. Office review required.')
+    return market, AREA[market], row, old
+
+
 def message_item(store, message, attachments):
     confirmed_scope = spectrum_scope(message, attachments)
     linked = thread_match(store,message)
@@ -319,6 +375,8 @@ def message_item(store, message, attachments):
                         'incident_id':incident}
         if not str(exc).startswith('Email format needs review:'):
             raise
+        if not linked:
+            linked = reviewed_cutover_match(store, message)
         if not linked:
             subject=str(message.get('subject',''))
             address=re.search(r'\b(\d{1,6}\s+(?:US\s+\d+|[A-Za-z0-9 .#\'-]+?\s(?:RD|ROAD|ST|STREET|AVE|AVENUE|DR|DRIVE|CT|COURT|LN|LANE|HWY|HIGHWAY)))(?![A-Za-z])',subject,re.I)
