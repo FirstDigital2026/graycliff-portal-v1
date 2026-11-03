@@ -336,3 +336,19 @@ enter the Florence or Columbia technician job pool. Assignment remains optional.
 
 Document previews now support browser display for images and PDFs, ZIP content
 listings, and readable EML/text previews. Download remains available separately.
+
+## Automatic job ZIP expansion
+
+The original Graycliff service checks Florence, Columbia and job history for ZIP
+attachments every minute. This includes previously attached ZIPs and direct job
+uploads. It adds archive members as individual row attachments while retaining
+the original ZIP. Content hashes and durable extraction receipts prevent repeated
+uploads; a later scan restores missing members while the original ZIP remains.
+Existing plain-name uploads are compared by content before adding another copy.
+
+The file worker uses a separate scheduler executor so archive work does not delay
+mail intake or completion updates. It processes up to ten archives per pass.
+Nested archives share the intake expansion limits. Failed or uncertain uploads
+retain their original ZIP and a durable review record in `job_zip_files`; retries
+first inspect actual row attachments. Job status, assignment, scheduling, comments
+and document-release permissions are not changed.
