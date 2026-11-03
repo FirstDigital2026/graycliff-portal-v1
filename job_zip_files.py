@@ -1,4 +1,4 @@
-"""Expand archives already attached to operational jobs and their history."""
+"""Expand archives attached to current operational jobs, one member at a time."""
 import hashlib
 import json
 import logging
@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from operations_intake import AREA, zip_member_files, signature_graphic
+from operations_intake import AREA, iter_zip_member_files, signature_graphic
 
 LOCK = threading.Lock()
 LOG = logging.getLogger(__name__)
@@ -25,7 +25,11 @@ def initialize(db):
 def inventory(store):
     for area, sid in AREA.items():
         sheet = store.get_sheet(sid, force=True)
+        columns = {str(c['id']): c['title'] for c in sheet.get('columns', [])}
         for row in sheet.get('rows', []):
+            values = {columns.get(str(c['columnId'])): c.get('value', '') for c in row.get('cells', [])}
+            if str(values.get('Status', '')).casefold() in {'billed', 'canceled', 'cancelled', 'closed'} or values.get('Portal Billing Status') == 'Submitted':
+                continue
             for attachment in row.get('attachments', []):
                 if attachment.get('attachmentType', 'FILE') == 'FILE' and str(attachment.get('name', '')).lower().endswith('.zip'):
                     yield sid, row['id'], {**attachment, '_row_names': [a['name'] for a in row.get('attachments', [])]}
@@ -80,7 +84,7 @@ def attach_members(store, sid, rid, members):
     return sorted(expected), added
 
 
-def run(store, db, limit=10, retry_errors=False):
+def run(store, db, limit=1, retry_errors=False):
     if os.getenv('RENDER_SERVICE_ID', '') != 'srv-d9p0jflbedkc73ds5tn0':
         return {'enabled': False, 'message': 'Only the original Graycliff service expands job ZIPs.'}
     if not LOCK.acquire(blocking=False):
@@ -125,7 +129,8 @@ def run(store, db, limit=10, retry_errors=False):
                 if int(attachment.get('sizeInKb') or 0) > 100 * 1024:
                     raise ValueError('ZIP exceeds the automatic processing size limit.')
                 data, name, mime = store.download_attachment(sid, aid)
-                members, errors = zip_member_files([(name, mime, data)])
+                errors = []
+                members = iter_zip_member_files([(name, mime, data)], errors)
                 expected, added = attach_members(store, sid, rid, members)
                 result['added'] += added
                 if errors:
@@ -142,3 +147,20 @@ def run(store, db, limit=10, retry_errors=False):
         return result
     finally:
         LOCK.release()
+
+
+if __name__ == '__main__':
+    # Maintenance backfills must not import app: that would initialize a second
+    # Flask service, caches and PDF workers beside the live process.
+    import argparse
+    import sqlite3
+    from smartsheet_api import SmartsheetClient
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--limit', type=int, default=1)
+    parser.add_argument('--retry-errors', action='store_true')
+    args = parser.parse_args()
+    def db():
+        c = sqlite3.connect(os.getenv('DATA_PATH', '/tmp/graycliff.db'))
+        c.row_factory = sqlite3.Row
+        return c
+    print(json.dumps(run(SmartsheetClient(ttl=0), db, args.limit, args.retry_errors)), flush=True)

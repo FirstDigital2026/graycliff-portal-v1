@@ -27,8 +27,12 @@ class Store:
         self.downloads = 0
         self.attachment_lists = 0
         self.timeout_after_save = False
+        self.status = 'On site'
+        self.billing = ''
     def get_sheet(self, sid, **kw):
-        return {'rows': [{'id': 7, 'attachments': list(self.files.values()), 'cells': [{'value': 'On site'}]}]}
+        return {'columns': [{'id': 1, 'title': 'Status'}, {'id': 2, 'title': 'Portal Billing Status'}],
+                'rows': [{'id': 7, 'attachments': list(self.files.values()), 'cells': [
+                    {'columnId': 1, 'value': self.status}, {'columnId': 2, 'value': self.billing}]}]}
     def list_row_attachments(self, *args):
         self.attachment_lists += 1
         return list(self.files.values())
@@ -118,6 +122,14 @@ class ExistingZipTests(unittest.TestCase):
             c.execute('INSERT INTO job_zip_files VALUES (?,?,?,?,?,?,?,?)', (99, 7, 1, '', 'Processing', '[]', time.time(), ''))
         self.assertEqual(worker.run(self.store, self.db)['pending'], 1)
         self.assertEqual(self.store.downloads, 0)
+
+    def test_closed_and_submitted_jobs_are_excluded(self):
+        for status in ['Billed', 'Canceled', 'Closed']:
+            self.store.status = status
+            self.assertEqual(worker.run(self.store, self.db)['archives'], 0)
+        self.store.status = 'Complete'
+        self.store.billing = 'Submitted'
+        self.assertEqual(worker.run(self.store, self.db)['archives'], 0)
 
     def test_blocked_html_is_exposed_as_readable_text_with_original_bytes(self):
         data = b'<html>Source picture markup</html>'

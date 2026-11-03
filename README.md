@@ -346,8 +346,10 @@ the original ZIP. Content hashes and durable extraction receipts prevent repeate
 uploads; a later scan restores missing members while the original ZIP remains.
 Existing plain-name uploads are compared by content before adding another copy.
 
-The file worker uses a separate scheduler executor so archive work does not delay
-mail intake or completion updates. It processes up to ten archives per pass.
+The file worker shares the serial scheduler executor with intake to avoid
+overlapping memory-heavy tasks. It processes one archive per pass and streams
+one extracted member at a time. Manual backfills use `python -m job_zip_files`
+instead of importing the entire Flask app beside the live service.
 Nested archives share the intake expansion limits. Failed or uncertain uploads
 retain their original ZIP and a durable review record in `job_zip_files`; retries
 first inspect actual row attachments. Job status, assignment, scheduling, comments

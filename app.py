@@ -1223,11 +1223,11 @@ def start_scheduler() -> None:
         return
 
     minutes = max(int(os.getenv("TECH_SYNC_MINUTES", "15")), 5)
-    scheduler = BackgroundScheduler(daemon=True, executors={"default": ThreadPoolExecutor(1), "job_files": ThreadPoolExecutor(1)}, job_defaults={"misfire_grace_time": 900})
+    scheduler = BackgroundScheduler(daemon=True, executors={"default": ThreadPoolExecutor(1)}, job_defaults={"misfire_grace_time": 900})
     scheduler.add_job(
         background_job(expand_existing_job_zips, store),
         'interval', minutes=1, id='graycliff_job_zip_files',
-        executor='job_files', max_instances=1, coalesce=True,
+        max_instances=1, coalesce=True,
     )
     scheduler.add_job(
         background_job(sync_technician_contacts, store),

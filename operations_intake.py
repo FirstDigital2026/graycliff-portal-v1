@@ -523,17 +523,17 @@ def signature_graphic(name, mime, data):
             or bool(SIGNATURE_ASSET_NAME.fullmatch(os.path.basename(name))))
 
 
-def zip_member_files(files, max_files=100, max_bytes=100 * 1024 * 1024):
+def iter_zip_member_files(files, errors, max_files=100, max_bytes=100 * 1024 * 1024):
     """Read ZIP members in memory, preserving the archive separately.
 
     Office documents such as XLSX are ZIP containers too; only expand actual
     ZIP attachments. Shared limits apply to nested archives and duplicate copies.
     """
-    output, errors, seen = [], [], set()
-    used = 0
+    seen = set()
+    used = count = 0
 
     def visit(name, mime, data, depth):
-        nonlocal used
+        nonlocal used, count
         if not (name.lower().endswith('.zip') or mime.lower() in {'application/zip', 'application/x-zip-compressed'}):
             return
         digest = hashlib.sha256(data).hexdigest()
@@ -550,7 +550,7 @@ def zip_member_files(files, max_files=100, max_bytes=100 * 1024 * 1024):
                         continue
                     if path.startswith('/') or '..' in path.split('/') or re.match(r'^[A-Za-z]:', path) or (info.external_attr >> 16) & 0o170000 == 0o120000:
                         raise ValueError('unsafe ZIP member path')
-                    if len(output) >= max_files or info.file_size > 20 * 1024 * 1024 or used + info.file_size > max_bytes:
+                    if count >= max_files or info.file_size > 20 * 1024 * 1024 or used + info.file_size > max_bytes:
                         raise ValueError('ZIP attachment size or file-count limit reached')
                     if info.flag_bits & 1:
                         raise ValueError('password-protected ZIP')
@@ -558,14 +558,20 @@ def zip_member_files(files, max_files=100, max_bytes=100 * 1024 * 1024):
                     used += len(content)
                     filename = path.rsplit('/', 1)[-1]
                     member_mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
-                    output.append((filename, member_mime, content))
-                    visit(filename, member_mime, content, depth + 1)
+                    count += 1
+                    yield filename, member_mime, content
+                    yield from visit(filename, member_mime, content, depth + 1)
+                    del content
         except (zipfile.BadZipFile, RuntimeError, ValueError, NotImplementedError) as exc:
             errors.append(name + ': ' + str(exc)[:180])
 
     for name, mime, data in files:
-        visit(name, mime, data, 0)
-    return output, errors
+        yield from visit(name, mime, data, 0)
+
+
+def zip_member_files(files, max_files=100, max_bytes=100 * 1024 * 1024):
+    errors = []
+    return list(iter_zip_member_files(files, errors, max_files, max_bytes)), errors
 
 
 def capture_email_files(store,token,message,sid,row_id,attachments,key):

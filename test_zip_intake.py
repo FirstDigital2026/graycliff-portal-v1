@@ -24,6 +24,23 @@ class Store:
 
 
 class ZipIntakeTests(unittest.TestCase):
+    def test_worker_streams_members_instead_of_loading_whole_archive(self):
+        data = zipped([('one.pdf', b'ONE'), ('two.pdf', b'TWO')])
+        original = zipfile.ZipFile.read
+        reads = []
+        def read(z, info, *args, **kw):
+            reads.append(info.filename)
+            return original(z, info, *args, **kw)
+        errors = []
+        with patch.object(zipfile.ZipFile, 'read', read):
+            stream = intake.iter_zip_member_files([('job.zip', 'application/zip', data)], errors)
+            self.assertEqual(reads, [])
+            self.assertEqual(next(stream)[0], 'one.pdf')
+            self.assertEqual(reads, ['one.pdf'])
+            self.assertEqual(next(stream)[0], 'two.pdf')
+            self.assertEqual(list(stream), [])
+        self.assertFalse(errors)
+
     def test_nested_archive_exposes_each_document_without_unpacking_xlsx(self):
         workbook = zipped([('xl/workbook.xml', '<workbook/>')])
         data = zipped([('plans/map.pdf', b'PDF'), ('work.xlsx', workbook),
