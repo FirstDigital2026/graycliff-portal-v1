@@ -523,6 +523,51 @@ def signature_graphic(name, mime, data):
             or bool(SIGNATURE_ASSET_NAME.fullmatch(os.path.basename(name))))
 
 
+def zip_member_files(files, max_files=100, max_bytes=100 * 1024 * 1024):
+    """Read ZIP members in memory, preserving the archive separately.
+
+    Office documents such as XLSX are ZIP containers too; only expand actual
+    ZIP attachments. Shared limits apply to nested archives and duplicate copies.
+    """
+    output, errors, seen = [], [], set()
+    used = 0
+
+    def visit(name, mime, data, depth):
+        nonlocal used
+        if not (name.lower().endswith('.zip') or mime.lower() in {'application/zip', 'application/x-zip-compressed'}):
+            return
+        digest = hashlib.sha256(data).hexdigest()
+        if digest in seen:
+            return
+        seen.add(digest)
+        try:
+            if depth >= 3:
+                raise ValueError('nested ZIP limit reached')
+            with zipfile.ZipFile(io.BytesIO(data)) as archive:
+                for info in archive.infolist():
+                    path = info.filename.replace('\\', '/')
+                    if info.is_dir() or path.startswith('__MACOSX/') or path.rsplit('/', 1)[-1] == '.DS_Store':
+                        continue
+                    if path.startswith('/') or '..' in path.split('/') or re.match(r'^[A-Za-z]:', path) or (info.external_attr >> 16) & 0o170000 == 0o120000:
+                        raise ValueError('unsafe ZIP member path')
+                    if len(output) >= max_files or info.file_size > 20 * 1024 * 1024 or used + info.file_size > max_bytes:
+                        raise ValueError('ZIP attachment size or file-count limit reached')
+                    if info.flag_bits & 1:
+                        raise ValueError('password-protected ZIP')
+                    content = archive.read(info)
+                    used += len(content)
+                    filename = path.rsplit('/', 1)[-1]
+                    member_mime = mimetypes.guess_type(filename)[0] or 'application/octet-stream'
+                    output.append((filename, member_mime, content))
+                    visit(filename, member_mime, content, depth + 1)
+        except (zipfile.BadZipFile, RuntimeError, ValueError, NotImplementedError) as exc:
+            errors.append(name + ': ' + str(exc)[:180])
+
+    for name, mime, data in files:
+        visit(name, mime, data, 0)
+    return output, errors
+
+
 def capture_email_files(store,token,message,sid,row_id,attachments,key):
     names = {a['name'] for a in store.list_row_attachments(sid,row_id)}
     raw = graph.get_message_mime(token,message['id'])
@@ -533,6 +578,8 @@ def capture_email_files(store,token,message,sid,row_id,attachments,key):
         store.attach_file_to_row(sid,row_id,filename=eml_name,mime_type='message/rfc822',data=raw)
     parts = source_attachments(raw)
     decoded_files = [d for a in attachments if (d:=graph.attachment_bytes(a))] + parts
+    expanded, zip_errors = zip_member_files(decoded_files)
+    decoded_files += expanded
     # Match content before saving either Graph or MIME copies. Outlook often
     # renames a signature image to image001.png in one of those copies.
     signature_hashes={hashlib.sha256(data).hexdigest() for name,mime,data in decoded_files if signature_graphic(name,mime,data)}
@@ -562,6 +609,8 @@ def capture_email_files(store,token,message,sid,row_id,attachments,key):
                     names.add(zipped_name)
             names.add(name)
         saved_hashes.add(digest)
+    if zip_errors:
+        raise ValueError('ZIP extraction needs office review; original email and ZIP retained. ' + '; '.join(zip_errors)[:700])
     for attachment in attachments:
         kind=attachment.get('@odata.type','')
         if kind=='#microsoft.graph.referenceAttachment':
