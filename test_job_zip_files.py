@@ -25,10 +25,12 @@ class Store:
         self.files = {1: {'id': 1, 'name': 'old-work.zip', 'attachmentType': 'FILE', 'mimeType': 'application/zip'}}
         self.data = {1: archive([('design/map.pdf', b'MAP'), ('quantities.xlsx', b'WORKBOOK')])}
         self.downloads = 0
+        self.attachment_lists = 0
         self.timeout_after_save = False
     def get_sheet(self, sid, **kw):
         return {'rows': [{'id': 7, 'attachments': list(self.files.values()), 'cells': [{'value': 'On site'}]}]}
     def list_row_attachments(self, *args):
+        self.attachment_lists += 1
         return list(self.files.values())
     def download_attachment(self, sid, aid):
         self.downloads += 1
@@ -73,6 +75,7 @@ class ExistingZipTests(unittest.TestCase):
         result = worker.run(self.store, self.db)
         self.assertEqual((result['processed'], result['added']), (0, 0))
         self.assertEqual(self.store.downloads, 1)
+        self.assertEqual(self.store.attachment_lists, 1)
     def test_removed_member_is_restored_automatically(self):
         worker.run(self.store, self.db)
         del self.store.files[2]

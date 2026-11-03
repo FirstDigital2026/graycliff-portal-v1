@@ -28,7 +28,7 @@ def inventory(store):
         for row in sheet.get('rows', []):
             for attachment in row.get('attachments', []):
                 if attachment.get('attachmentType', 'FILE') == 'FILE' and str(attachment.get('name', '')).lower().endswith('.zip'):
-                    yield sid, row['id'], attachment
+                    yield sid, row['id'], {**attachment, '_row_names': [a['name'] for a in row.get('attachments', [])]}
 
 
 def attach_members(store, sid, rid, members):
@@ -88,7 +88,7 @@ def run(store, db, limit=10, retry_errors=False):
                 if prior['state'] == 'Complete':
                     # Confirm extracted files remain attached; restore a removed
                     # member automatically while its original ZIP is retained.
-                    current = {a['name'] for a in store.list_row_attachments(sid, rid)}
+                    current = set(attachment['_row_names'])
                     if set(json.loads(prior['expected'])).issubset(current):
                         continue
                 if prior['state'] == 'Needs review' and not retry_errors and time.time() - prior['checked_at'] < 1800:
