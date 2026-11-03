@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from operations_intake import SEARCH_SHEETS, zip_member_files, signature_graphic
+from operations_intake import AREA, zip_member_files, signature_graphic
 
 LOCK = threading.Lock()
 LOG = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def initialize(db):
 
 
 def inventory(store):
-    for area, sid in SEARCH_SHEETS.items():
+    for area, sid in AREA.items():
         sheet = store.get_sheet(sid, force=True)
         for row in sheet.get('rows', []):
             for attachment in row.get('attachments', []):
@@ -35,7 +35,8 @@ def attach_members(store, sid, rid, members):
     """Use the same content-hashed names as intake; also recognize older plain names."""
     existing = store.list_row_attachments(sid, rid)
     names = {a['name'] for a in existing}
-    hashes = {m.group(1): n for n in names if (m := re.search(r'-([a-f0-9]{10})(?:\.[^.]+)?$', n))}
+    hashes = {m.group(1): n for n in names if not n.lower().endswith('.zip')
+              and (m := re.search(r'-([a-f0-9]{10})(?:\.[^.]+)*$', n))}
     expected, added = set(), 0
     for name, mime, data in members:
         if signature_graphic(name, mime, data):
@@ -61,7 +62,17 @@ def attach_members(store, sid, rid, members):
         if target not in names:
             # An ambiguous upload is never blindly retried. The next scan lists
             # the actual row first and recognizes the content-hashed filename.
-            store.attach_file_to_row(sid, rid, filename=target, mime_type=mime, data=data)
+            try:
+                store.attach_file_to_row(sid, rid, filename=target, mime_type=mime, data=data)
+            except Exception as exc:
+                # Smartsheet refuses executable HTML and some email extensions.
+                # Keep those exact bytes as a readable text attachment; never
+                # execute the file or rewrap it into another unexpanded ZIP.
+                if not re.search(r'"errorCode"\s*:\s*5021\b', str(exc)) or os.path.splitext(name)[1].lower() not in {'.html', '.htm', '.eml'}:
+                    raise
+                target += '.txt'
+                if target not in names:
+                    store.attach_file_to_row(sid, rid, filename=target, mime_type='text/plain', data=data)
             names.add(target)
             added += 1
         hashes[digest] = target

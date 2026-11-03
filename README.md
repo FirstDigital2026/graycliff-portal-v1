@@ -339,7 +339,7 @@ listings, and readable EML/text previews. Download remains available separately.
 
 ## Automatic job ZIP expansion
 
-The original Graycliff service checks Florence, Columbia and job history for ZIP
+The original Graycliff service checks current Florence and Columbia jobs for ZIP
 attachments every minute. This includes previously attached ZIPs and direct job
 uploads. It adds archive members as individual row attachments while retaining
 the original ZIP. Content hashes and durable extraction receipts prevent repeated

@@ -61,7 +61,7 @@ class ExistingZipTests(unittest.TestCase):
         self.store = Store()
         self.env = patch.dict(os.environ, {'RENDER_SERVICE_ID': 'srv-d9p0jflbedkc73ds5tn0'})
         self.env.start()
-        self.sheets = patch.object(worker, 'SEARCH_SHEETS', {'Florence': 99})
+        self.sheets = patch.object(worker, 'AREA', {'Florence': 99})
         self.sheets.start()
     def tearDown(self):
         self.env.stop()
@@ -118,6 +118,26 @@ class ExistingZipTests(unittest.TestCase):
             c.execute('INSERT INTO job_zip_files VALUES (?,?,?,?,?,?,?,?)', (99, 7, 1, '', 'Processing', '[]', time.time(), ''))
         self.assertEqual(worker.run(self.store, self.db)['pending'], 1)
         self.assertEqual(self.store.downloads, 0)
+
+    def test_blocked_html_is_exposed_as_readable_text_with_original_bytes(self):
+        data = b'<html>Source picture markup</html>'
+        digest = hashlib.sha256(data).hexdigest()[:10]
+        self.store.files[1]['name'] = 'picture-' + digest + '.html.zip'
+        self.store.data[1] = archive([('picture.html', data)])
+        original = self.store.attach_file_to_row
+        def attach(*args, **kwargs):
+            if kwargs['filename'].endswith('.html'):
+                raise RuntimeError('{"errorCode": 5021}')
+            return original(*args, **kwargs)
+        with patch.object(self.store, 'attach_file_to_row', side_effect=attach):
+            result = worker.run(self.store, self.db)
+            self.assertEqual((result['added'], result['errors']), (1, []))
+            self.assertTrue(self.store.files[2]['name'].endswith('.html.txt'))
+            self.assertEqual(self.store.data[2], data)
+            # A second archive containing the same source does not add a copy.
+            self.store.files[3] = {'id': 3, 'name': 'same-picture.zip', 'mimeType': 'application/zip'}
+            self.store.data[3] = self.store.data[1]
+            self.assertEqual(worker.run(self.store, self.db)['added'], 0)
 
 
 if __name__ == '__main__':
