@@ -66,6 +66,13 @@ def resolve(store, token, event, base):
         raise mail.ThreadReview('No source email is attached for field reply-all verification.')
     raw, _, _ = store.download_attachment(sid, files[0]['id'])
     source = mail.from_mime(raw)
+    if base is not None and source['messageId'] != base['messageId']:
+        for attachment in files[1:]:
+            candidate_raw, _, _ = store.download_attachment(sid, attachment['id'])
+            candidate = mail.from_mime(candidate_raw)
+            if candidate['messageId'] == base['messageId']:
+                source = candidate
+                break
     if base is None:
         base = source
     people = source['from'] + source['to'] + source['cc'] + base['from'] + base['to'] + base['cc']

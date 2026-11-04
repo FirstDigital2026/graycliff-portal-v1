@@ -137,11 +137,18 @@ def validate_route(route):
         raise ThreadReview('Original recipients include a no-reply address; office review required.')
     return {**route,'to':to,'cc':cc}
 
-def resolve_thread(store,token,e):
+def resolve_thread(store,token,e,prefer_customer=False):
     sid=int(e['sheetId']);rid=int(e['rowId'])
     files=[a for a in store.list_row_attachments(sid,rid) if str(a.get('name','')).lower().endswith('.eml')]
     files.sort(key=lambda a:(a.get('createdAt',''),str(a.get('id',''))),reverse=True)
     if not files:raise ThreadReview('No original email is attached. Office must link the correct thread.')
+    # A later internal forward must not hide the actual incoming customer chain.
+    for attachment in files if prefer_customer else []:
+        raw,_,_=store.download_attachment(sid,attachment['id'])
+        candidate=from_mime(raw)
+        if (any(not a.endswith('@firstdigitalsc.com') for a in candidate['from'])
+                and any(a.endswith('@firstdigitalsc.com') for a in candidate['to']+candidate['cc'])):
+            return validate_route(candidate)
     raw,_,_=store.download_attachment(sid,files[0]['id']);source=from_mime(raw)
     if external(source):return validate_route(source)
     # Forwarded mail addressed only to the shared inbox is not the customer chain.
@@ -157,7 +164,7 @@ def resolve_thread(store,token,e):
 def resolve_field_thread(store,token,e):
     from field_thread import resolve
     try:
-        base=resolve_thread(store,token,e)
+        base=resolve_thread(store,token,e,prefer_customer=True)
     except ThreadReview:
         # Internal forwards often omit References. Verify their exact Graph
         # conversation before selecting customer headers instead.
