@@ -56,7 +56,7 @@ def conversation_records(token, mailbox, conversation_id):
 
 
 def resolve(store, token, event, base):
-    if not forwarded(base.get('subject', '')):
+    if base is not None and not forwarded(base.get('subject', '')):
         return base
     sid, rid = int(event['sheetId']), int(event['rowId'])
     files = [a for a in store.list_row_attachments(sid, rid)
@@ -66,6 +66,8 @@ def resolve(store, token, event, base):
         raise mail.ThreadReview('No source email is attached for field reply-all verification.')
     raw, _, _ = store.download_attachment(sid, files[0]['id'])
     source = mail.from_mime(raw)
+    if base is None:
+        base = source
     people = source['from'] + source['to'] + source['cc'] + base['from'] + base['to'] + base['cc']
     boxes = list(dict.fromkeys([a for a in people if a.endswith('@firstdigitalsc.com')] + [mail.SENDER]))[:8]
     identity = None
@@ -106,7 +108,9 @@ def resolve(store, token, event, base):
     # Keep the original reply chain, while retaining all human participants from
     # that exact conversation, including colleagues who forwarded the assignment.
     anchor = max(originals, key=lambda item: item[0])[1]
-    routes = [anchor, base] + [route for _, route in candidates]
+    routes = [anchor] + [route for _, route in candidates]
+    if mail.external(base):
+        routes.append(base)
     to = list(dict.fromkeys(address for route in routes for address in route['to']))
     cc = list(dict.fromkeys(address for route in routes for address in route['cc'] if address not in to))
     return mail.validate_route({**anchor, 'to': to, 'cc': cc})

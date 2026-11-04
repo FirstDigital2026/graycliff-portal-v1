@@ -156,7 +156,13 @@ def resolve_thread(store,token,e):
 
 def resolve_field_thread(store,token,e):
     from field_thread import resolve
-    return resolve(store,token,e,resolve_thread(store,token,e))
+    try:
+        base=resolve_thread(store,token,e)
+    except ThreadReview:
+        # Internal forwards often omit References. Verify their exact Graph
+        # conversation before selecting customer headers instead.
+        base=None
+    return resolve(store,token,e,base)
 
 def draft_event(e,route):
     job=e.get('job',{});complete=e['status']=='Field complete'

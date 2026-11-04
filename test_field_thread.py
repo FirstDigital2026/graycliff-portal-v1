@@ -61,6 +61,19 @@ class FieldThreadTests(unittest.TestCase):
         with patch.object(field, 'exact_record', side_effect=AssertionError('unexpected lookup')):
             self.assertIs(field.resolve(Store(), 'fake', self.event, base), base)
 
+    def test_internal_forward_without_references_uses_exact_conversation(self):
+        with patch.object(field, 'exact_record', return_value={'conversationId': 'verified'}), \
+             patch.object(field, 'conversation_records', return_value=self.rows):
+            route = mail.resolve_field_thread(Store(), 'fake', self.event)
+        self.assertEqual(route['messageId'], '<latest@example.com>')
+        self.assertIn('customer@example.com', route['to'])
+        self.assertNotIn('body-only@example.net', route['to'] + route['cc'])
+
+    def test_internal_forward_without_verified_conversation_stays_held(self):
+        with patch.object(field, 'exact_record', return_value=None):
+            with self.assertRaises(mail.ThreadReview):
+                mail.resolve_field_thread(Store(), 'fake', self.event)
+
     def test_missing_verified_original_holds(self):
         with self.assertRaises(mail.ThreadReview):
             self.resolve([self.rows[1]])
