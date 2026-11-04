@@ -18,6 +18,10 @@ def codes(raw,rate):
     if token.upper()=='FDH':
         parts=raw.split();token+=''.join(parts[1:2])
         if len(parts)>2 and parts[2].upper().startswith('DU'):token+=parts[2]
+    # A scan can duplicate the 5 as 5S. Accept this known glyph error only
+    # with the independently printed card rate; row and total checks still apply.
+    if token.upper()=='BD5SMPF' and 'BD5MPF' in k.REV and rate==k.money(k.REV['BD5MPF']['rate']):
+        token='BD5MPF'
     key=k.norm(token);matches=[c for c in k.REV if c==key]
     if not matches:matches=[c for c in k.REV if skeleton(c)==skeleton(key)]
     if not matches:matches=[c for c in k.REV if skeleton(c).startswith(skeleton(key))]
