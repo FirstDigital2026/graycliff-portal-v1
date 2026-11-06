@@ -268,6 +268,17 @@ def completion_signature(draft):
     return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
 
 
+def suppress_delivered_completion(c,row):
+    if not row['draft'] or json.loads(row['payload']).get('status')!='Field complete':return False
+    prior=c.execute("SELECT seq,draft FROM mail_event_outbox WHERE job_key=? AND state='ACCEPTED' AND sent_at IS NOT NULL ORDER BY seq DESC LIMIT 1",(row['job_key'],)).fetchone()
+    if not prior or not prior['draft']:return False
+    between=c.execute('SELECT payload FROM mail_event_outbox WHERE job_key=? AND seq>=? AND seq<=?',(row['job_key'],min(prior['seq'],row['seq']),max(prior['seq'],row['seq']))).fetchall()
+    same_episode=all(json.loads(item['payload']).get('status')=='Field complete' for item in between)
+    if not same_episode or completion_signature(json.loads(prior['draft']))!=completion_signature(json.loads(row['draft'])):return False
+    c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Identical completion already accepted by Microsoft. No duplicate email sent.' WHERE event_id=? AND state IN ('NEW','NEEDS_ATTENTION','NEEDS_THREAD_REVIEW','READY') AND sent_at IS NULL",(row['event_id'],))
+    return True
+
+
 def dispatch(db,event_id,store=None):
     # This guard executes before tokens, transport, or changes to sent status.
     if not SEND_ARMED:raise RuntimeError('Email sending is disarmed. No email was sent.')
@@ -301,13 +312,7 @@ def dispatch(db,event_id,store=None):
         if e['status']=='Field complete':
             # Repeated saves of identical completion content must not resend a
             # ZIP. A reopened job or changed findings/photos remains a new update.
-            prior=c.execute("SELECT seq,draft FROM mail_event_outbox WHERE job_key=? AND state='ACCEPTED' AND sent_at IS NOT NULL ORDER BY seq DESC LIMIT 1",(row['job_key'],)).fetchone()
-            if prior and prior['draft']:
-                between=c.execute('SELECT payload FROM mail_event_outbox WHERE job_key=? AND seq>=? AND seq<=?',(row['job_key'],min(prior['seq'],row['seq']),max(prior['seq'],row['seq']))).fetchall()
-                same_episode=all(json.loads(item['payload']).get('status')=='Field complete' for item in between)
-                if same_episode and completion_signature(json.loads(prior['draft']))==completion_signature(draft):
-                    c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Identical completion already accepted by Microsoft. No duplicate email sent.' WHERE event_id=?",(event_id,))
-                    return
+            if suppress_delivered_completion(c,row):return
         transport=base64.b64encode(mime_message(draft))
         import billing_transport
         large_files=[]
@@ -418,6 +423,9 @@ def prepare(store,db):
                           (e['eventId'],e['seq'],e['jobKey'],json.dumps(e),state,e['at']))
                 c.execute("INSERT OR REPLACE INTO mail_bridge_meta VALUES('cursor',?)",(str(e['seq']),))
         retry_photo_size_holds(db)
+        with db() as c:
+            held=c.execute("SELECT * FROM mail_event_outbox WHERE state IN ('NEW','NEEDS_ATTENTION','NEEDS_THREAD_REVIEW') AND sent_at IS NULL AND draft IS NOT NULL").fetchall()
+            for row in held:suppress_delivered_completion(c,row)
         cutoff=datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat()
         with db() as c:pending=c.execute("SELECT * FROM mail_event_outbox WHERE state='NEW' OR (state='NEEDS_ATTENTION' AND prepared_at<?) ORDER BY seq LIMIT 20",(cutoff,)).fetchall()
         token=None
