@@ -301,9 +301,9 @@ def dispatch(db,event_id,store=None):
         if e['status']=='Field complete':
             # Repeated saves of identical completion content must not resend a
             # ZIP. A reopened job or changed findings/photos remains a new update.
-            prior=c.execute("SELECT seq,draft FROM mail_event_outbox WHERE job_key=? AND seq<? AND state='ACCEPTED' AND sent_at IS NOT NULL ORDER BY seq DESC LIMIT 1",(row['job_key'],row['seq'])).fetchone()
+            prior=c.execute("SELECT seq,draft FROM mail_event_outbox WHERE job_key=? AND state='ACCEPTED' AND sent_at IS NOT NULL ORDER BY seq DESC LIMIT 1",(row['job_key'],)).fetchone()
             if prior and prior['draft']:
-                between=c.execute('SELECT payload FROM mail_event_outbox WHERE job_key=? AND seq>=? AND seq<?',(row['job_key'],prior['seq'],row['seq'])).fetchall()
+                between=c.execute('SELECT payload FROM mail_event_outbox WHERE job_key=? AND seq>=? AND seq<=?',(row['job_key'],min(prior['seq'],row['seq']),max(prior['seq'],row['seq']))).fetchall()
                 same_episode=all(json.loads(item['payload']).get('status')=='Field complete' for item in between)
                 if same_episode and completion_signature(json.loads(prior['draft']))==completion_signature(draft):
                     c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Identical completion already accepted by Microsoft. No duplicate email sent.' WHERE event_id=?",(event_id,))

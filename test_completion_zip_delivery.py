@@ -63,5 +63,19 @@ class ZipDelivery(unittest.TestCase):
         with patch.object(transport,'send_large',side_effect=AssertionError('Duplicate email')):
             mail.dispatch(self.db,self.event['eventId'],self.store)
         with self.db() as c:self.assertEqual(c.execute('SELECT state FROM mail_event_outbox WHERE event_id=?',(self.event['eventId'],)).fetchone()[0],'SUPERSEDED')
+    def test_older_retry_does_not_resend_a_newer_delivered_completion(self):
+        with self.db() as c:
+            prior={**self.event,'eventId':'00000000-0000-0000-0000-000000000003'}
+            draft={**self.draft,'eventId':prior['eventId']}
+            c.execute("INSERT INTO mail_event_outbox(event_id,seq,job_key,payload,state,created_at,draft,sent_at) VALUES(?,2,?,?,'ACCEPTED',?,?,?)",(prior['eventId'],prior['jobKey'],json.dumps(prior),mail.now(),json.dumps(draft),mail.now()))
+        with patch.object(transport,'send_large',side_effect=AssertionError('Older duplicate email')):mail.dispatch(self.db,self.event['eventId'],self.store)
+        with self.db() as c:self.assertEqual(c.execute('SELECT state FROM mail_event_outbox WHERE event_id=?',(self.event['eventId'],)).fetchone()[0],'SUPERSEDED')
+    def test_reopened_job_can_send_an_identical_completion(self):
+        with self.db() as c:
+            prior={**self.event,'eventId':'00000000-0000-0000-0000-000000000003'}
+            c.execute("UPDATE mail_event_outbox SET seq=3")
+            c.execute("INSERT INTO mail_event_outbox(event_id,seq,job_key,payload,state,created_at,draft,sent_at) VALUES(?,1,?,?,'ACCEPTED',?,?,?)",(prior['eventId'],prior['jobKey'],json.dumps(prior),mail.now(),json.dumps({**self.draft,'eventId':prior['eventId']}),mail.now()))
+            c.execute("INSERT INTO mail_event_outbox(event_id,seq,job_key,payload,state,created_at) VALUES('reopened',2,?,?,'NOT_REQUIRED',?)",(prior['jobKey'],json.dumps({**self.event,'status':'Working'}),mail.now()))
+        with patch.object(transport,'send_large') as send:mail.dispatch(self.db,self.event['eventId'],self.store);send.assert_called_once()
 
 if __name__=='__main__':unittest.main()
