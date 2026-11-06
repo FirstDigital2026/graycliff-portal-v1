@@ -1,4 +1,4 @@
-import base64,json,os,sqlite3,tempfile,unittest
+import base64,io,json,os,sqlite3,tempfile,unittest,zipfile
 from contextlib import contextmanager
 from email import policy
 from email.parser import BytesParser
@@ -18,7 +18,9 @@ class ZipDelivery(unittest.TestCase):
                 with c:yield c
             finally:c.close()
         self.db=db;mail.initialize(db)
-        self.raw=os.urandom(3*1024*1024)
+        archive=io.BytesIO()
+        with zipfile.ZipFile(archive,'w') as package:package.writestr('Field-photo-1.jpg',os.urandom(3*1024*1024))
+        self.raw=archive.getvalue()
         self.event={'eventId':'00000000-0000-0000-0000-000000000001','at':mail.now(),'action':'status','status':'Field complete','committed':True,'jobKey':'florence:123','sheetId':'1','rowId':'123','job':{'type':'Standard'}}
         self.draft={'eventId':self.event['eventId'],'to':['test@example.invalid'],'cc':[],'subject':'Re: Test','parent':'<original@example.invalid>','references':['<original@example.invalid>'],'text':'Complete','html':'<p>Complete</p>','attachments':[{'name':'Field-photos.zip','mime':'application/zip','content':base64.b64encode(self.raw).decode()}]}
         with db() as c:
@@ -52,5 +54,14 @@ class ZipDelivery(unittest.TestCase):
         mail.retry_photo_size_holds(self.db);self.assertEqual(self.state(),'NEW')
         with self.db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_THREAD_REVIEW',sent_at=?",(mail.now(),))
         mail.retry_photo_size_holds(self.db);self.assertEqual(self.state(),'NEEDS_THREAD_REVIEW')
+    def test_repeated_completion_does_not_resend_the_same_zip(self):
+        with self.db() as c:
+            prior={**self.event,'eventId':'00000000-0000-0000-0000-000000000002'}
+            draft={**self.draft,'eventId':prior['eventId']}
+            c.execute("UPDATE mail_event_outbox SET seq=2")
+            c.execute("INSERT INTO mail_event_outbox(event_id,seq,job_key,payload,state,created_at,draft,sent_at) VALUES(?,1,?,?,'ACCEPTED',?,?,?)",(prior['eventId'],prior['jobKey'],json.dumps(prior),mail.now(),json.dumps(draft),mail.now()))
+        with patch.object(transport,'send_large',side_effect=AssertionError('Duplicate email')):
+            mail.dispatch(self.db,self.event['eventId'],self.store)
+        with self.db() as c:self.assertEqual(c.execute('SELECT state FROM mail_event_outbox WHERE event_id=?',(self.event['eventId'],)).fetchone()[0],'SUPERSEDED')
 
 if __name__=='__main__':unittest.main()

@@ -253,6 +253,21 @@ def after_activation(event_time,activation_time):
     try:return datetime.fromisoformat(event_time.replace('Z','+00:00'))>=datetime.fromisoformat(activation_time.replace('Z','+00:00'))
     except (ValueError,TypeError,AttributeError):return False
 
+def completion_signature(draft):
+    import io,zipfile
+    value={k:v for k,v in draft.items() if k!='eventId'}
+    files=[]
+    for attachment in draft.get('attachments',[]):
+        raw=base64.b64decode(attachment['content'],validate=True)
+        if attachment.get('mime')=='application/zip':
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                digest=sorted((name,hashlib.sha256(archive.read(name)).hexdigest()) for name in archive.namelist())
+        else:digest=hashlib.sha256(raw).hexdigest()
+        files.append({'name':attachment['name'],'mime':attachment.get('mime'),'digest':digest})
+    value['attachments']=files
+    return hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+
+
 def dispatch(db,event_id,store=None):
     # This guard executes before tokens, transport, or changes to sent status.
     if not SEND_ARMED:raise RuntimeError('Email sending is disarmed. No email was sent.')
@@ -282,7 +297,18 @@ def dispatch(db,event_id,store=None):
         if fresh is None or (not outage and values.get('Status')!=expected) or kind_changed or incident_changed or values.get('Portal Billing Status')=='Submitted':
             c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Job moved, changed incident/category, billing was submitted, or a non-outage completion was reopened. Email held.' WHERE event_id=?",(event_id,))
             return
-        draft=json.loads(row['draft']);transport=base64.b64encode(mime_message(draft))
+        draft=json.loads(row['draft'])
+        if e['status']=='Field complete':
+            # Repeated saves of identical completion content must not resend a
+            # ZIP. A reopened job or changed findings/photos remains a new update.
+            prior=c.execute("SELECT seq,draft FROM mail_event_outbox WHERE job_key=? AND seq<? AND state='ACCEPTED' AND sent_at IS NOT NULL ORDER BY seq DESC LIMIT 1",(row['job_key'],row['seq'])).fetchone()
+            if prior and prior['draft']:
+                between=c.execute('SELECT payload FROM mail_event_outbox WHERE job_key=? AND seq>=? AND seq<?',(row['job_key'],prior['seq'],row['seq'])).fetchall()
+                same_episode=all(json.loads(item['payload']).get('status')=='Field complete' for item in between)
+                if same_episode and completion_signature(json.loads(prior['draft']))==completion_signature(draft):
+                    c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Identical completion already accepted by Microsoft. No duplicate email sent.' WHERE event_id=?",(event_id,))
+                    return
+        transport=base64.b64encode(mime_message(draft))
         import billing_transport
         large_files=[]
         if len(transport)>3900000:
