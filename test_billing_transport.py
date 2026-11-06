@@ -3,6 +3,7 @@ import json
 import hashlib
 import unittest
 from email.message import EmailMessage
+from collections import Counter
 from unittest.mock import patch
 import billing_transport as b
 
@@ -61,6 +62,17 @@ class Tests(unittest.TestCase):
         g=Graph();g.to='changed@example.invalid';f={'name':'TEST.xlsx','size':2,'data':b'PK'}
         with self.assertRaises(b.BeforeSendFailure):b.send_large(g,'sender@example.invalid',draft(),[f])
         self.assertFalse(any(u.endswith('/send') for m,u,k in g.calls))
+    def test_internal_alias_requires_exact_mailbox_identity(self):
+        wanted=Counter({'alias@firstdigitalsc.com':1});present=Counter({'canonical@firstdigitalsc.com':1})
+        g=Graph()
+        with patch.object(g,'_request',return_value={'id':'same-mailbox-inbox'}):
+            self.assertTrue(b.same_recipients(g,'fictional-token',wanted,present))
+        with patch.object(g,'_request',side_effect=[{'id':'mailbox-one'},{'id':'mailbox-two'}]):
+            self.assertFalse(b.same_recipients(g,'fictional-token',wanted,present))
+    def test_external_recipient_change_never_uses_alias_fallback(self):
+        g=Graph()
+        with patch.object(g,'_request',side_effect=AssertionError('External aliases must not be guessed')):
+            self.assertFalse(b.same_recipients(g,'fictional-token',Counter({'one@example.invalid':1}),Counter({'two@example.invalid':1})))
     def test_changed_upload_bytes_block_send(self):
         g=Graph();f={'name':'TEST.xlsx','size':2,'data':b'PK'}
         with patch.object(b,'attachment_digest',return_value=(2,'wrong-digest')):

@@ -82,6 +82,27 @@ def attachment_digest(url,token):
     return size,digest.hexdigest()
 
 
+def same_recipients(graph,token,wanted,present):
+    """Prove internal SMTP aliases using the same Microsoft mailbox inbox ID."""
+    if wanted==present:return True
+    external=lambda values:Counter({a:n for a,n in values.items() if not a.endswith('@firstdigitalsc.com')})
+    if external(wanted)!=external(present):return False
+    unchanged=wanted & present
+    wanted=wanted-unchanged;present=present-unchanged
+    if sum(wanted.values())!=sum(present.values()):return False
+    identities={}
+    for address in wanted.keys()|present.keys():
+        if not address.endswith('@firstdigitalsc.com'):return False
+        folder=graph._request('GET',graph.GRAPH_ROOT+'/users/'+urllib.parse.quote(address,safe='')+'/mailFolders/inbox?$select=id',token=token)
+        if not isinstance(folder.get('id'),str) or not folder['id']:return False
+        identities[address]=folder['id']
+    def boxes(values):
+        result=Counter()
+        for address,count in values.items():result[identities[address]]+=count
+        return result
+    return boxes(wanted)==boxes(present)
+
+
 def send_large(graph, sender, draft_mime, files, remember_draft=lambda value: None):
     validate_size(files)
     base = graph.GRAPH_ROOT + '/users/' + urllib.parse.quote(sender, safe='')
@@ -116,7 +137,7 @@ def send_large(graph, sender, draft_mime, files, remember_draft=lambda value: No
         for header,field in [('To','toRecipients'),('Cc','ccRecipients'),('Bcc','bccRecipients')]:
             wanted=Counter(address.lower() for _,address in getaddresses(reviewed.get_all(header,[])))
             present=Counter(item.get('emailAddress',{}).get('address','').lower() for item in check.get(field,[]))
-            if wanted!=present:raise ValueError('The draft recipients differ from the reviewed package.')
+            if not same_recipients(graph,token,wanted,present):raise ValueError('The draft recipients differ from the reviewed package.')
         if str(reviewed['Subject'])!=check.get('subject'):raise ValueError('The draft subject differs from the reviewed package.')
         headers={h['name'].lower():h['value'] for h in check.get('internetMessageHeaders',[])}
         if str(reviewed.get('In-Reply-To',''))!=headers.get('in-reply-to',''):raise ValueError('Microsoft did not retain the reviewed original email thread.')
