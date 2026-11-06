@@ -1,6 +1,6 @@
 const precloseDrafts=new Map();
 function precloseState(key){if(!precloseDrafts.has(key))precloseDrafts.set(key,{photos:[],chosen:new Set(),loaded:false,without:false,review:'',batch:null,uploading:false});return precloseDrafts.get(key);}
-function preclosePending(form){return [...(form.elements.precloseUploads?.files||[]),...(form.elements['outagePhotos[]']?.files||[])];}
+function preclosePending(form){return [...(form.elements.precloseUploads?.files||[]),...(form.elements['outagePhotos[]']?.files||[]),...(form.elements.jobUpdatePhotos?.files||[])];}
 function precloseFingerprint(form,state){return JSON.stringify({photos:[...state.chosen].sort(),without:state.without,note:form.elements.note?.value||'',noc:form.elements.nocTechnician?.value||'',pending:preclosePending(form).map(f=>[f.name,f.size,f.lastModified])});}
 function precloseSummary(form,state){
  const selected=state.photos.filter(p=>state.chosen.has(p.key)),box=form.querySelector('[data-preclose-summary]');
@@ -27,17 +27,24 @@ async function precloseLoad(form,key){
   message.textContent='All saved photos stay on the job. Only checked photos will go in this completion email.';precloseSummary(form,state);
  }catch(error){state.loaded=false;message.textContent=error.message+' Use Refresh saved photos to retry.';}
 }
+function precloseSync(){
+ const form=document.querySelector('#statusform');if(!form)return;const closing=form.elements.status.value==='Field complete',box=form.querySelector('[data-preclose-mounted]');if(box)box.hidden=!closing;
+ const saved=document.querySelector('#saved-closeout-photos');if(saved&&closing)saved.hidden=true;
+ const legacy=form.elements.jobUpdatePhotos?.closest('div.wide');if(legacy)legacy.hidden=closing;
+ const help=form.querySelector('#unified-photo-help');if(help&&!closing)help.textContent='Save photos only keeps photos on the job without sending email. When completing the job, choose which saved photos go in the completion email.';
+}
 function precloseMount(){
- const form=document.querySelector('#statusform'),box=form?.querySelector('#completion-photo-reminder'),key=detail?.job?.key||selected;if(!form||!box||box.dataset.precloseMounted)return;
- box.dataset.precloseMounted='1';box.style.cssText='padding:16px;background:#f1f7fb;border:1px solid #bdd3e3;border-radius:8px';
+ const form=document.querySelector('#statusform'),key=detail?.job?.key||selected;if(!form)return;if(form.querySelector('[data-preclose-mounted]')){precloseSync();return;}
+ form.querySelector('#completion-photo-reminder')?.remove();const box=document.createElement('div');box.className='wide';box.id='fdgc-preclose-photos';box.dataset.precloseMounted='1';box.style.cssText='padding:16px;background:#f1f7fb;border:1px solid #bdd3e3;border-radius:8px';form.querySelector('.formgrid').prepend(box);
  box.innerHTML='<h3>Pre-close: save photos, then choose email photos</h3><p>Every uploaded photo stays with this job. Choose a few saved photos for the completion email.</p><h4>1. Save all job photos</h4><label>Add job photos<input type="file" name="precloseUploads" multiple accept="image/jpeg,image/png,image/webp,image/heic"></label><small>No limit on the number of job photos. Each file can be up to 15 MB.</small><div class="actions"><button type="button" class="btn" data-preclose-upload>Save photos to job</button><button type="button" class="btn" data-preclose-refresh>Refresh saved photos</button></div><p data-preclose-message role="status"></p><h4>2. Choose photos for the email</h4><p>Check up to 10 photos. Nothing is selected automatically.</p><div data-preclose-gallery class="fdgc-preclose-gallery"></div><label style="display:flex;gap:10px;align-items:center;margin:14px 0"><input type="checkbox" data-preclose-without style="width:auto"> Send completion email without photos</label><p data-preclose-summary aria-live="polite"></p><button type="button" class="btn" data-preclose-review>Review completion email photos</button><section data-preclose-review-panel hidden></section>';
  const state=precloseState(key);form.dataset.precloseKey=key;box.querySelector('[data-preclose-without]').checked=state.without;
  const outage=form.elements['outagePhotos[]'];if(outage&&form.elements.status.value==='Field complete')outage.closest('label').hidden=true;
- if(form.elements.status.value==='Field complete')precloseLoad(form,key);
+ precloseSync();if(form.elements.status.value==='Field complete')precloseLoad(form,key);queueMicrotask(precloseSync);
 }
-const precloseOldDraw=drawDetail;drawDetail=function(...args){const result=precloseOldDraw(...args);precloseMount();return result;};
+const precloseOldDraw=drawDetail;drawDetail=function(...args){const result=precloseOldDraw(...args);precloseMount();queueMicrotask(precloseMount);return result;};
 document.addEventListener('change',e=>{
  const form=e.target.closest('#statusform');if(!form)return;precloseMount();const key=form.dataset.precloseKey;if(!key)return;const state=precloseState(key);
+ queueMicrotask(precloseSync);
  if(e.target.name==='status'){
   const closing=e.target.value==='Field complete',outage=form.elements['outagePhotos[]'];if(outage)outage.closest('label').hidden=closing;
   if(closing&&!state.loaded)precloseLoad(form,key);if(!closing){const button=form.querySelector('button[type="submit"]');if(button)button.textContent=detail?.job?.type==='Outage'?'Save & send outage update':'Save status';}else precloseSummary(form,state);
@@ -65,7 +72,7 @@ document.addEventListener('click',async e=>{
   try{
    if(!state.batch||state.batch.files.length!==files.length||files.some((file,i)=>file!==state.batch.files[i]))state.batch={files,entries:files.map(file=>({file,id:uid(),done:false}))};
    for(const [i,item]of state.batch.entries.entries()){if(item.done)continue;message.textContent='Saving photo '+(i+1)+' of '+files.length+': '+item.file.name;await request('upload',{key,file:item.file,submission:item.id,fieldSafe:'1'});item.done=true;}
-   input.value='';if(form.elements['outagePhotos[]'])form.elements['outagePhotos[]'].value='';state.batch=null;await precloseLoad(form,key);message.textContent='All '+files.length+' photos saved to the job. Now choose the few photos for the email.';
+   input.value='';if(form.elements['outagePhotos[]'])form.elements['outagePhotos[]'].value='';if(form.elements.jobUpdatePhotos)form.elements.jobUpdatePhotos.value='';state.batch=null;await precloseLoad(form,key);message.textContent='All '+files.length+' photos saved to the job. Now choose the few photos for the email.';
   }catch(error){message.textContent=error.message+' Saved photos are kept. Retry Save photos to job to continue.';}finally{state.uploading=false;busy=false;button.disabled=false;input.disabled=false;if(form.elements['outagePhotos[]'])form.elements['outagePhotos[]'].disabled=false;}return;
  }
  if(!state.loaded){message.textContent='Refresh saved photos before reviewing the email.';return;}
@@ -76,7 +83,7 @@ document.addEventListener('click',async e=>{
  for(const photo of state.photos.filter(p=>state.chosen.has(p.key))){const row=document.createElement('p');row.textContent='✓ '+photo.name.replace(/^Field-upload-[a-f0-9]+-/,'');const thumb=[...form.querySelectorAll('[data-preclose-thumb]')].find(t=>t.dataset.precloseThumb===photo.key)?.querySelector('img');if(thumb){const image=thumb.cloneNode(true);image.style.cssText='display:block;width:160px;height:130px;object-fit:contain';row.prepend(image);}panel.append(row);}
  const note=document.createElement('p');note.textContent='After reviewing, use Complete job & send completion email below.';panel.append(note);panel.hidden=false;state.review=precloseFingerprint(form,state);panel.scrollIntoView({block:'nearest'});
 });
-document.addEventListener('submit',async e=>{
+window.addEventListener('submit',async e=>{
  if(e.target.id!=='statusform'||e.target.elements.status.value!=='Field complete')return;
  e.preventDefault();e.stopImmediatePropagation();const form=e.target;precloseMount();const key=form.dataset.precloseKey,state=precloseState(key),message=form.querySelector('[data-preclose-message]');
  if(busy||state.uploading)return;
@@ -84,7 +91,7 @@ document.addEventListener('submit',async e=>{
  if(!form.reportValidity())return;busy=true;const submit=form.querySelector('button[type="submit"]');submit.disabled=true;
  try{
   await request('preclose_selection',{key,submission,photos:JSON.stringify([...state.chosen]),withoutPhotos:state.without?'1':'0'});
-  const vals=Object.fromEntries(new FormData(form));delete vals.precloseUploads;delete vals['outagePhotos[]'];vals.key=key;vals.submission=submission;
+  const vals=Object.fromEntries(new FormData(form));delete vals.precloseUploads;delete vals.jobUpdatePhotos;delete vals['outagePhotos[]'];vals.key=key;vals.submission=submission;
   busy=false;const saved=await mutate('status',vals,true);if(saved){submission=uid();precloseDrafts.delete(key);}
  }catch(error){message.textContent=error.message;toast(error.message);}finally{busy=false;if(submit.isConnected)submit.disabled=false;}
 },true);
