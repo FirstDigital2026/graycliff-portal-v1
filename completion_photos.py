@@ -4,6 +4,8 @@ import hashlib
 import re
 import json
 import urllib.error
+import io
+import zipfile
 
 
 def attach(draft, event, store, bridge, review):
@@ -40,13 +42,25 @@ def attach(draft, event, store, bridge, review):
             raise review('Unexpected completion photo filename.')
         seen.add(digest)
         total += len(raw)
-        if total > 1572864:
+        if total > 14 * 1024 * 1024:
             raise review('Completion photo package is too large; no photos were omitted.')
         attachments.append({'name': name, 'content': photo['content'], 'mime': 'image/jpeg'})
+    photo_count = len(attachments)
+    zipped = total > 1572864
+    if zipped:
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, 'w', compression=zipfile.ZIP_DEFLATED) as package:
+            for photo in attachments:
+                package.writestr(photo['name'], base64.b64decode(photo['content'], validate=True))
+        raw_zip = archive.getvalue()
+        if len(raw_zip) > 15 * 1024 * 1024:
+            raise review('The photo ZIP exceeds the email limit; no photos were omitted.')
+        attachments = [{'name': 'Field-photos.zip', 'content': base64.b64encode(raw_zip).decode('ascii'), 'mime': 'application/zip'}]
     # Completion collects all saved field pictures, including outage pictures.
     # Avoid sending the same newly submitted outage photo a second time inline.
     output = {**draft, 'attachments': attachments}
     if attachments:
-        output['text'] += '\n\n'+str(len(attachments))+' field photo(s) attached.'
-        output['html'] = output['html'].replace('<hr>', '<p>'+str(len(attachments))+' field photo(s) attached.</p><hr>', 1)
+        note = str(photo_count) + (' field photo(s) attached in Field-photos.zip.' if zipped else ' field photo(s) attached.')
+        output['text'] += '\n\n' + note
+        output['html'] = output['html'].replace('<hr>', '<p>' + note + '</p><hr>', 1)
     return output

@@ -3,6 +3,7 @@ from email import policy
 from email.parser import BytesParser
 import completion_photos as photos
 import mail_automation as mail
+import io, zipfile
 
 class CompletionPhotos(unittest.TestCase):
     def setUp(self):
@@ -28,7 +29,17 @@ class CompletionPhotos(unittest.TestCase):
         p=self.package();p['photos'][0]['sha256']='0'*64
         with self.assertRaises(mail.ThreadReview):self.attach(p)
     def test_oversized_package_not_silently_truncated(self):
-        with self.assertRaises(mail.ThreadReview):self.attach(self.package(b'\xff\xd8'+b'x'*1572864))
+        original = b'\xff\xd8' + b'x' * 1572864
+        result = self.attach(self.package(original))
+        mime = BytesParser(policy=policy.default).parsebytes(mail.mime_message(result))
+        files = list(mime.iter_attachments())
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].get_content_type(), 'application/zip')
+        with zipfile.ZipFile(io.BytesIO(files[0].get_payload(decode=True))) as archive:
+            self.assertEqual(archive.namelist(), ['Field-photo-1.jpg'])
+            self.assertEqual(archive.read('Field-photo-1.jpg'), original)
+        self.assertIn('1 field photo(s)', result['text'])
+        self.assertEqual(mime['In-Reply-To'], '<fictional@example.com>')
     def test_document_is_not_accepted_as_photo(self):
         with self.assertRaises(mail.ThreadReview):self.attach(self.package(b'%PDF-fictional'))
     def test_duplicate_package_is_held(self):

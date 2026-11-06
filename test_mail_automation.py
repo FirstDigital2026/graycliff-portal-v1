@@ -69,7 +69,7 @@ def bridge(store,method,path,payload=None,after=None):
   assert method=='POST' and isinstance(payload.get('after'),int)
   return {'events':[event]}
  reports.append(payload);return {'ok':True}
-m.bridge=bridge;m.resolve_thread=lambda *args:route;m.graph.access_token=lambda:'fake-token'
+m.bridge=bridge;m.resolve_field_thread=lambda *args:route;m.graph.access_token=lambda:'fake-token'
 transports=[]
 m.graph._request=lambda *args,**kwargs:transports.append((args,kwargs))
 m.prepare(store,db);m.prepare(store,db)
@@ -127,7 +127,7 @@ def fresh_feed(store,method,path,payload=None,after=None):
 def concurrent_accept(*args):
  with db() as c:c.execute("UPDATE mail_event_outbox SET state='ACCEPTED' WHERE event_id=?",(other['eventId'],))
  return route
-m.bridge=fresh_feed;m.resolve_thread=concurrent_accept;m.SEND_ARMED=True
+m.bridge=fresh_feed;m.resolve_field_thread=concurrent_accept;m.SEND_ARMED=True
 m.prepare(store,db)
 with db() as c:assert c.execute('SELECT state FROM mail_event_outbox WHERE event_id=?',(other['eventId'],)).fetchone()[0]=='ACCEPTED'
 m.SEND_ARMED=False

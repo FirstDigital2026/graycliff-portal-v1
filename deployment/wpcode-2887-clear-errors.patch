@@ -1,0 +1,105 @@
+--- wpcode-2887-before.php
++++ wpcode-2887-after.php
+@@ -2593,12 +2593,14 @@
+ };
+ 
+ // A top-layer notice stays above an open modal without discarding its work.
++const fdgcWorkflowAcknowledged=new Set();
++const fdgcWorkflowSignature=x=>JSON.stringify([x.id,x.key||'',x.message,x.at||'',x.state||'']);
+ const fdgcWorkflowLocal=new Map();let fdgcWorkflowRemote=[],fdgcWorkflowMail={},fdgcWorkflowLast='',fdgcWorkflowPolling=false;
+-async function fdgcWorkflowApi(op,values={}){const body=new URLSearchParams({action:'fdgc_workflow_alerts',nonce:cfg.nonce,op,workspace:view,...values});if(cfg.appSession)body.set('fdgc_phone_session','1');const r=await fetch(cfg.ajax,{method:'POST',credentials:'same-origin',cache:'no-store',body});const result=await r.json();if(!r.ok||!result.success)throw Error(result.data?.message||'Issue status unavailable.');return result.data;}
++async function fdgcWorkflowApi(op,values={}){const body=new URLSearchParams({action:'fdgc_workflow_alerts',nonce:cfg.nonce,op,workspace:view,...values});if(cfg.appSession)body.set('fdgc_phone_session','1');const r=await fetch(cfg.ajax,{method:'POST',credentials:'same-origin',cache:'no-store',body});const result=await r.json();if(!r.ok||!result.success)throw Error(result.data?.message||'Issue status unavailable.');fdgcWorkflowAcknowledged.clear();for(const signature of result.data.acknowledged||[])fdgcWorkflowAcknowledged.add(signature);return result.data;}
+ function fdgcWorkflowItems(){
+  const items=new Map(fdgcWorkflowRemote.map(x=>[x.id,x]));for(const [key,value]of fdgcWorkflowLocal)items.set(key,value);
+- for(const d of fdgcWorkflowMail.drafts||[])if(['NEEDS_THREAD_REVIEW','NEEDS_ATTENTION','UNCERTAIN','UNCERTAIN_SOURCE'].includes(d.state)){const id='mail|'+d.jobKey;items.set(id,{id,key:d.jobKey,title:d.title||d.jobKey,kind:'Completion / field update email',message:d.detail||'Email needs attention. Open the job to review the original thread.'});}
+- return [...items.values()];
++ for(const d of fdgcWorkflowMail.drafts||[])if(['NEEDS_THREAD_REVIEW','NEEDS_ATTENTION','UNCERTAIN','UNCERTAIN_SOURCE'].includes(d.state)){const id='mail|'+d.jobKey;items.set(id,{id,key:d.jobKey,title:d.title||d.jobKey,kind:'Completion / field update email',at:d.eventId||d.text||d.subject||'',state:d.state,message:d.detail||'Email needs attention. Open the job to review the original thread.'});}
++ return [...items.values()].filter(x=>!fdgcWorkflowAcknowledged.has(fdgcWorkflowSignature(x)));
+ }
+ function fdgcWorkflowRaise(){const host=document.querySelector('[data-workflow-popover]');if(!host||!fdgcWorkflowItems().length)return;try{if(host.matches(':popover-open'))host.hidePopover();host.showPopover();}catch{const dialog=document.querySelector('dialog[open]');if(dialog)dialog.append(host);host.hidden=false;}}
+ function fdgcWorkflowDraw(raise=false){
+@@ -2606,7 +2608,7 @@
+  if(!bar){bar=document.createElement('section');bar.dataset.workflowBoard='';bar.className='fdgc-workflow-board';bar.setAttribute('aria-label','Jobs needing attention');root.before(bar);}
+  if(!host){host=document.createElement('section');host.dataset.workflowPopover='';host.className='fdgc-workflow-popover';host.setAttribute('popover','manual');host.setAttribute('role','alert');host.setAttribute('aria-live','assertive');document.body.append(host);}
+  bar.hidden=!items.length;if(!items.length){try{host.hidePopover();}catch{}host.hidden=true;fdgcWorkflowLast='';return;}
+- const markup=items.map(x=>'<article><strong>'+escape(x.title)+'</strong><p>'+escape(x.kind)+': '+escape(x.message)+'</p><button type="button" class="btn" data-workflow-open="'+escape(x.key||'')+'">View job / correct issue</button></article>').join('');bar.innerHTML='<h3>'+items.length+' issue(s) need attention</h3>'+markup;
++ const markup=items.map(x=>'<article><strong>'+escape(x.title)+'</strong><p>'+escape(x.kind)+': '+escape(x.message)+'</p><button type="button" class="btn" data-workflow-open="'+escape(x.key||'')+'">View job / correct issue</button>'+((cfg.role||view)==='office'?'<button type="button" class="btn" style="margin-left:8px" data-workflow-clear="'+escape(x.id)+'" title="Acknowledge this alert. Email delivery and job status stay unchanged.">Clear error</button>':'')+'</article>').join('');bar.innerHTML='<h3>'+items.length+' issue(s) need attention</h3>'+markup;
+  const signature=JSON.stringify(items.map(x=>[x.id,x.message]));host.hidden=false;host.innerHTML='<h3>Job needs attention</h3>'+markup+'<button type="button" class="btn" data-workflow-keep>Keep working — issue stays on the dashboard</button>';
+  if(raise||signature!==fdgcWorkflowLast){fdgcWorkflowLast=signature;fdgcWorkflowRaise();}
+ }
+@@ -2614,8 +2616,13 @@
+ function fdgcWorkflowRecord(op,values,message){
+  const key=values.key||fdgcBuilder?.key||selected||'',kind=op+'-'+(values.kind||''),id=key+'|'+kind;if(!key)return;
+  if(message)fdgcWorkflowLocal.set(id,{id,key,title:detail?.job?.key===key?detail.job.title:jobs.find(j=>j.key===key)?.title||key,kind:op==='builder_build'?'Document build':'Job action',message});else fdgcWorkflowLocal.delete(id);
+- fdgcWorkflowDraw(!!message);fdgcWorkflowApi('record',{key,kind,message:message||''}).then(d=>{fdgcWorkflowRemote=d.issues||[];fdgcWorkflowMail=d.mail||{};fdgcWorkflowDraw();}).catch(()=>{});
+-}
++ fdgcWorkflowDraw(!!message);fdgcWorkflowApi('record',{key,kind,message:message||''}).then(d=>{fdgcWorkflowLocal.delete(id);fdgcWorkflowRemote=d.issues||[];fdgcWorkflowMail=d.mail||{};fdgcWorkflowDraw();}).catch(()=>{});
++}
++document.addEventListener('click',async e=>{
++ const button=e.target.closest('[data-workflow-clear]');if(!button)return;
++ e.preventDefault();const item=fdgcWorkflowItems().find(x=>x.id===button.dataset.workflowClear);if(!item)return;
++ button.disabled=true;try{await fdgcWorkflowApi('acknowledge',{signature:fdgcWorkflowSignature(item)});fdgcWorkflowDraw();toast('Error cleared. Email delivery and job status were not changed.');}catch(error){toast(error.message);}finally{if(button.isConnected)button.disabled=false;}
++});
+ const fdgcWorkflowOldRequest=request;
+ request=async function(op,values={}){try{const result=await fdgcWorkflowOldRequest(op,values);if(['file','builder_build','builder_save','builder_prepare','status','edit_job','builder_package_save','billing_submit'].includes(op))fdgcWorkflowRecord(op,values,'');return result;}catch(error){if(['builder_build','builder_save','builder_prepare','status','edit_job','builder_package_save','billing_submit'].includes(op))fdgcWorkflowRecord(op,values,error.message);throw error;}};
+ document.addEventListener('click',async e=>{const keep=e.target.closest('[data-workflow-keep]');if(keep){try{keep.closest('[data-workflow-popover]').hidePopover();}catch{keep.closest('[data-workflow-popover]').hidden=true;}return;}const button=e.target.closest('[data-workflow-open]');if(!button)return;const key=button.dataset.workflowOpen;try{if(fdgcBuilder?.key===key){try{document.querySelector('[data-workflow-popover]').hidePopover();}catch{}const field=document.querySelector('[data-location-work-date][aria-invalid="true"]')||document.querySelector('[data-location-work-dates] input');if(field){field.scrollIntoView({block:'center'});field.focus();}return;}if(fdgcBuilder?.dirty){toast('Your current draft has unsaved changes. Save or finish it before opening another job.');return;}await open(key);fdgcWorkflowRaise();}catch(error){toast(error.message);}});
+@@ -3616,10 +3623,18 @@
+             $kind=sanitize_key($_POST['kind']??'');if($kind==='')throw new RuntimeException('Issue type required.');
+             $message=substr(sanitize_textarea_field(wp_unslash($_POST['message']??'')),0,1500);$id=$key.'|'.$kind;
+             $lock=FDGC_Live_Operations::lock();try{$records=get_option('fdgc_workflow_alerts_v1',[]);if($message==='')unset($records[$id]);else $records[$id]=['id'=>$id,'key'=>$key,'title'=>$job['title'],'kind'=>$kind,'message'=>$message,'at'=>gmdate('c')];update_option('fdgc_workflow_alerts_v1',array_slice($records,-100,null,true),false);}finally{FDGC_Live_Operations::unlock($lock);}
+-        }elseif($op!=='list')throw new RuntimeException('Unknown issue action.');
++        }elseif($op==='acknowledge'){
++   if($role!=='office')throw new RuntimeException('Office access required to clear an error.');
++   $signature=(string)wp_unslash($_POST['signature']??'');$fields=json_decode($signature,true);
++   if(strlen($signature)>6000||!is_array($fields)||count($fields)!==5||!is_string($fields[0])||!preg_match('/^(florence|columbia|history):[0-9]+$/',(string)$fields[1]))throw new RuntimeException('Refresh the alert before clearing it.');
++   $lock=FDGC_Live_Operations::lock();try{
++    $ack=get_option('fdgc_workflow_ack_v1',[]);$ack[hash('sha256',$signature)]=['signature'=>$signature,'at'=>gmdate('c'),'by'=>FDGC_Live_Operations::actor()->display_name];
++    update_option('fdgc_workflow_ack_v1',array_slice($ack,-500,null,true),false);
++   }finally{FDGC_Live_Operations::unlock($lock);}
++  }elseif($op!=='list')throw new RuntimeException('Unknown issue action.');
+         if($role!=='office'){$allowed=array_fill_keys(array_column(FDGC_Live_Operations::jobs(false),'key'),true);$records=array_filter($records,function($r)use($allowed){return isset($allowed[$r['key']]);});}
+         $mail=$role==='office'?get_option('fdgc_mail_report',[]):[];
+-        wp_send_json_success(['issues'=>array_values($records),'mail'=>$mail]);
++        wp_send_json_success(['issues'=>array_values($records),'mail'=>$mail,'acknowledged'=>$role==='office'?array_values(array_column(get_option('fdgc_workflow_ack_v1',[]),'signature')):[]]);
+     }catch(Throwable $e){wp_send_json_error(['message'=>$e->getMessage()],400);}
+ });
+ 
+@@ -3648,3 +3663,38 @@
+  $path=trim((string)parse_url($_SERVER['REQUEST_URI']??'',PHP_URL_PATH),'/');if(!in_array($path,['graycliff-office','graycliff-tech'],true))return;
+  ob_start(static function($html){return str_replace("||!(intake.items||[]).some(i=>i.state==='Imported'&&i.jobKey===issue.key)",'', $html);});
+ },-1002);
++
++// Field-photo ZIP preparation, 2026-11-06. Original job photographs are retained.
++add_action('rest_api_init',static function(){
++ if(!class_exists('FDGC_Completion_Photos'))return;
++ register_rest_route('fdgc/v1','/completion-photos',['methods'=>'POST','permission_callback'=>['FDGC_Live_Operations','bridge_authorized'],'callback'=>static function($request){
++
++        try{
++            $input=$request->get_json_params();$key=(string)($input['jobKey']??'');
++            if(!preg_match('/^(florence|columbia):([0-9]+)$/',$key,$parts))throw new RuntimeException('Invalid operational job.');
++            $map=FDGC_Live_Operations::mapping();$sheet=FDGC_Live_Operations::sheet($map[$parts[1]]['id'],true);$row=null;
++            foreach($sheet['rows']??[]as$r)if((string)$r['id']===$parts[2]){$row=$r;break;}
++            if(!$row)throw new RuntimeException('Completion job moved or is unavailable.');
++            $job=FDGC_Live_Operations::job($row,$sheet,$parts[1],false);if(!$job)throw new RuntimeException('Invalid completion job.');
++            $refs=[];foreach(FDGC_Completion_Photos::row_files($sheet['id'],$row['id'])as$a)if(FDGC_Completion_Photos::selected($job,$a))$refs[$sheet['id'].':'.$a['id']]=$a+['sheetId'=>$sheet['id']];
++            if(($job['type']??'')==='Project'&&!empty($job['project']['sheetId'])){
++                $ps=FDGC_Live_Operations::sheet($job['project']['sheetId'],true);
++                foreach($ps['rows']??[]as$pr)foreach(FDGC_Completion_Photos::row_files($ps['id'],$pr['id'])as$a)if(FDGC_Live_Operations::customer_photo($a)&&preg_match('/^Location-photo-/',$a['name']??''))$refs[$ps['id'].':'.$a['id']]=$a+['sheetId'=>$ps['id']];
++            }
++            if(count($refs)>20)throw new RuntimeException('More than 20 field photos need an office email package; no photos were omitted.');
++            $photos=[];$seen=[];$optimized=[];$budget=(int)floor((14*1024*1024)/max(1,count($refs)));
++            foreach($refs as$a){
++                if(($a['sizeInKb']??0)>15360)throw new RuntimeException('A field photo exceeds the email preparation limit.');
++                $meta=FDGC_Live_Operations::api('GET','/sheets/'.$a['sheetId'].'/attachments/'.$a['id']);$url=$meta['url']??'';
++                if(strpos($url,'https://')!==0)throw new RuntimeException('Field photo download is unavailable.');
++                $reply=wp_remote_get($url,['timeout'=>20,'limit_response_size'=>15728641]);
++                if(is_wp_error($reply)||wp_remote_retrieve_response_code($reply)!==200)throw new RuntimeException('A field photo could not be downloaded.');
++                $bytes=wp_remote_retrieve_body($reply);if(strlen($bytes)>15728640)throw new RuntimeException('A field photo is too large.');
++                $hash=hash('sha256',$bytes);if(isset($seen[$hash]))continue;$seen[$hash]=true;
++                $raw=FDGC_Completion_Photos::optimize($bytes,$budget);$digest=hash('sha256',$raw);if(isset($optimized[$digest]))continue;$optimized[$digest]=true;$photos[]=['name'=>'Field-photo-'.(count($photos)+1).'.jpg','content'=>base64_encode($raw),'sha256'=>$digest];
++            }
++            return ['jobKey'=>$key,'photos'=>$photos];
++        }catch(Throwable $e){return new WP_Error('completion_photos',$e->getMessage(),['status'=>409]);}
++
++ }],true);
++},999);

@@ -242,7 +242,11 @@ def mime_message(draft):
     for photo in photos:
         m.get_payload()[-1].add_related(base64.b64decode(photo['content'],validate=True),maintype='image',subtype='jpeg',cid='<'+photo['cid']+'>',filename=photo['name'],disposition='inline')
     for attachment in draft.get('attachments',[]):
-        m.add_attachment(base64.b64decode(attachment['content'],validate=True),maintype='image',subtype='jpeg',filename=attachment['name'])
+        mime = attachment.get('mime', 'image/jpeg')
+        if mime not in ('image/jpeg', 'application/zip'):
+            raise ThreadReview('Unsupported field attachment type.')
+        maintype, subtype = mime.split('/', 1)
+        m.add_attachment(base64.b64decode(attachment['content'],validate=True),maintype=maintype,subtype=subtype,filename=attachment['name'])
     return m.as_bytes()
 
 def after_activation(event_time,activation_time):
@@ -279,12 +283,27 @@ def dispatch(db,event_id,store=None):
             c.execute("UPDATE mail_event_outbox SET state='SUPERSEDED',detail='Job moved, changed incident/category, billing was submitted, or a non-outage completion was reopened. Email held.' WHERE event_id=?",(event_id,))
             return
         draft=json.loads(row['draft']);transport=base64.b64encode(mime_message(draft))
-        if len(transport)>3900000:raise ThreadReview('The update email is too large. Office review required; no email sent.')
+        import billing_transport
+        large_files=[]
+        if len(transport)>3900000:
+            for attachment in draft.get('attachments',[]):
+                raw=base64.b64decode(attachment['content'],validate=True)
+                large_files.append({'name':attachment['name'],'data':raw,'size':len(raw)})
+            if not large_files:raise ThreadReview('The update email is too large. Office review required; no email sent.')
+            billing_transport.validate_size(large_files)
+            transport=base64.b64encode(mime_message({**draft,'attachments':[]}))
+            if len(transport)>3900000:raise ThreadReview('The update body is too large. Office review required; no email sent.')
         changed=c.execute("UPDATE mail_event_outbox SET state='DISPATCHING' WHERE event_id=? AND state='READY'",(event_id,)).rowcount
         if changed!=1:raise RuntimeError('Email is already being processed.')
     try:
-        graph._request('POST',graph.GRAPH_ROOT+'/users/'+urllib.parse.quote(SENDER,safe='')+'/sendMail',
-            token=graph.access_token(),body=transport,headers={'Content-Type':'text/plain'})
+        if large_files:
+            billing_transport.send_large(graph,SENDER,base64.b64decode(transport),large_files)
+        else:
+            graph._request('POST',graph.GRAPH_ROOT+'/users/'+urllib.parse.quote(SENDER,safe='')+'/sendMail',
+                token=graph.access_token(),body=transport,headers={'Content-Type':'text/plain'})
+    except billing_transport.BeforeSendFailure:
+        with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_ATTENTION',detail='Photo ZIP upload failed before sending. No email was sent.' WHERE event_id=?",(event_id,))
+        raise
     except Exception:
         with db() as c:c.execute("UPDATE mail_event_outbox SET state='UNCERTAIN',detail='Provider outcome uncertain. Check Sent Items before any manual retry.' WHERE event_id=?",(event_id,))
         raise
@@ -339,12 +358,21 @@ def report(db):
     for r in rows:
         d=json.loads(r['draft']) if r['draft'] else {}
         event=json.loads(r['payload'])
-        drafts.append({'jobKey':r['job_key'],'title':d.get('title') or event.get('job',{}).get('title') or r['job_key'],'state':r['state'],
+        drafts.append({'eventId':r['event_id'],'jobKey':r['job_key'],'title':d.get('title') or event.get('job',{}).get('title') or r['job_key'],'state':r['state'],
             'subject':d.get('subject',''),'recipients':d.get('to',[])+d.get('cc',[]),'text':d.get('text',''),'detail':r['detail']})
     live=bool(SEND_ARMED and policy and policy[0])
     return {'sending':'LIVE' if live else 'PAUSED','checkedAt':now(),'counts':counts,'drafts':drafts,'backup':json.loads(backup[0]) if backup else None,
             'liveAfter':policy[0] if live else None,
             'detail':'Email updates are enabled for new saved status changes. Previously paused drafts remain held.' if live else 'Updates are prepared for review. Sending is paused; paused drafts are never automatically released.'}
+
+def retry_photo_size_holds(db):
+    """Rebuild only definitely-unsent completions held by the retired size gate."""
+    with db() as c:
+        rows=c.execute("SELECT event_id,payload FROM mail_event_outbox WHERE state='NEEDS_THREAD_REVIEW' AND sent_at IS NULL AND detail=?",('Field photos need a smaller email package. Office review required; no photos were omitted.',)).fetchall()
+        for row in rows:
+            if json.loads(row['payload']).get('status')=='Field complete':
+                c.execute("UPDATE mail_event_outbox SET state='NEW',detail='Rebuilding field photos with ZIP support.' WHERE event_id=? AND state='NEEDS_THREAD_REVIEW' AND sent_at IS NULL",(row['event_id'],))
+
 
 def prepare(store,db):
     if os.getenv('RENDER_SERVICE_ID','')!=OWNER_SERVICE:return {'skipped':True}
@@ -363,6 +391,7 @@ def prepare(store,db):
                 c.execute('INSERT OR IGNORE INTO mail_event_outbox(event_id,seq,job_key,payload,state,created_at) VALUES(?,?,?,?,?,?)',
                           (e['eventId'],e['seq'],e['jobKey'],json.dumps(e),state,e['at']))
                 c.execute("INSERT OR REPLACE INTO mail_bridge_meta VALUES('cursor',?)",(str(e['seq']),))
+        retry_photo_size_holds(db)
         cutoff=datetime.fromtimestamp(time.time()-300,timezone.utc).isoformat()
         with db() as c:pending=c.execute("SELECT * FROM mail_event_outbox WHERE state='NEW' OR (state='NEEDS_ATTENTION' AND prepared_at<?) ORDER BY seq LIMIT 20",(cutoff,)).fetchall()
         token=None
