@@ -11,8 +11,19 @@ import zipfile
 def attach(draft, event, store, bridge, review):
     if event.get('status') != 'Field complete':
         return draft
+    selection = event.get('completionPhotoSelection')
+    payload = {'jobKey': event['jobKey']}
+    if selection is not None:
+        if not isinstance(selection, dict) or selection.get('version') != 1 or selection.get('reviewed') is not True or not isinstance(selection.get('photos'), list) or len(selection['photos']) > 10:
+            raise review('Review the completion email photo selection before closing the job.')
+        refs = selection['photos']
+        if any(not isinstance(p, dict) or not str(p.get('sheetId', '')).isdigit() or not str(p.get('id', '')).isdigit() or not isinstance(p.get('name'), str) for p in refs):
+            raise review('Completion email photo references could not be verified.')
+        if len({(p['sheetId'], p['id']) for p in refs}) != len(refs):
+            raise review('Completion email photo selection contains duplicates.')
+        payload.update(eventId=event['eventId'], selection=selection)
     try:
-        result = bridge(store, 'POST', '/fdgc/v1/completion-photos', {'jobKey': event['jobKey']})
+        result = bridge(store, 'POST', '/fdgc/v1/completion-photos', payload)
     except urllib.error.HTTPError as exc:
         if exc.code != 409:
             raise
@@ -23,6 +34,8 @@ def attach(draft, event, store, bridge, review):
         raise review(str(message)[:400] or 'Completion photos need office review. No photos were omitted.')
     if result.get('jobKey') != event['jobKey'] or not isinstance(result.get('photos'), list):
         raise review('Completion photos could not be verified. Office review required.')
+    if selection is not None and (result.get('selection') != selection or len(result['photos']) > len(selection['photos'])):
+        raise review('The prepared photos differ from the reviewed email selection. No email sent.')
     photos = result['photos']
     if len(photos) > 20:
         raise review('Completion photo package needs office review; no photos were omitted.')
@@ -56,8 +69,8 @@ def attach(draft, event, store, bridge, review):
         if len(raw_zip) > 15 * 1024 * 1024:
             raise review('The photo ZIP exceeds the email limit; no photos were omitted.')
         attachments = [{'name': 'Field-photos.zip', 'content': base64.b64encode(raw_zip).decode('ascii'), 'mime': 'application/zip'}]
-    # Completion collects all saved field pictures, including outage pictures.
-    # Avoid sending the same newly submitted outage photo a second time inline.
+    # Explicit closeout selections are durable event snapshots. Legacy events
+    # keep their original behavior; new job uploads never expand a saved choice.
     output = {**draft, 'attachments': attachments}
     if attachments:
         note = str(photo_count) + (' field photo(s) attached in Field-photos.zip.' if zipped else ' field photo(s) attached.')

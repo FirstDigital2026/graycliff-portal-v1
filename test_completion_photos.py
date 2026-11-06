@@ -48,5 +48,27 @@ class CompletionPhotos(unittest.TestCase):
     def test_excess_photos_not_omitted(self):
         p=self.package();p['photos']*=21
         with self.assertRaises(mail.ThreadReview):self.attach(p)
+    def test_explicit_selection_is_bound_to_the_original_completion(self):
+        selection={'version':1,'reviewed':True,'photos':[{'sheetId':'7','id':'101','name':'chosen.jpg'}]}
+        self.event.update(eventId='saved-event',completionPhotoSelection=selection)
+        def bridge(store,method,path,payload):
+            self.assertEqual(payload,{'jobKey':'columbia:123','eventId':'saved-event','selection':selection})
+            return {**self.package(),'selection':selection}
+        result=photos.attach(self.draft,self.event,None,bridge,mail.ThreadReview)
+        self.assertEqual(len(result['attachments']),1)
+    def test_explicit_no_photos_never_falls_back_to_all_job_photos(self):
+        selection={'version':1,'reviewed':True,'photos':[]}
+        self.event.update(eventId='saved-event',completionPhotoSelection=selection)
+        def bridge(*args):
+            self.assertEqual(args[-1]['selection']['photos'],[])
+            return {'jobKey':'columbia:123','photos':[],'selection':selection}
+        result=photos.attach(self.draft,self.event,None,bridge,mail.ThreadReview)
+        self.assertEqual(result['attachments'],[])
+    def test_selection_response_cannot_expand_the_saved_choice(self):
+        self.event.update(eventId='saved-event',completionPhotoSelection={'version':1,'reviewed':True,'photos':[]})
+        with self.assertRaises(mail.ThreadReview):self.attach({**self.package(),'selection':self.event['completionPhotoSelection']})
+    def test_unreviewed_selection_is_held_before_reading_photos(self):
+        self.event.update(eventId='saved-event',completionPhotoSelection={'version':1,'reviewed':False,'photos':[]})
+        with self.assertRaises(mail.ThreadReview):photos.attach(self.draft,self.event,None,lambda *a:self.fail('Unreviewed choice read photos'),mail.ThreadReview)
 
 if __name__=='__main__':unittest.main()
