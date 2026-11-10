@@ -35,6 +35,43 @@ class ExtractionTests(unittest.TestCase):
         crq=[{'title':'1314 Jefferson Rd CRQ 158257','sourceKey':'1:2'}]
         self.assertEqual(match_job('Work Completed Spreadsheet (1314 Jefferson Rd CRQ158257).xlsx',crq)['sourceKey'],'1:2')
 
+    def test_live_closeout_filename_variants(self):
+        jobs=[
+            {'title':'3200 Example Oak Ln 3F45','sourceKey':'1:1'},
+            {'title':'1410 Example Trace','sourceKey':'1:2'},
+            {'title':'8123457 · 1600 Example Mill Rd Exampletown','sourceKey':'1:3'},
+            {'title':'3F13E · cut temporary cable','sourceKey':'1:4'},
+            {'title':'Example Ridge Hwy · permanent repair CRQ812346','sourceKey':'1:5'},
+        ]
+        cases=[
+            ('3200 Example Oak Ln 3F45E','No light 3200 Example Oak Ln 3F45E','1:1'),
+            ('1410 Example Trace CRQ812345','1410 Example Trace Florence SC','1:2'),
+            ('1600 Example Mill Rd','PID 8123457 - 1600 Example Mill Rd','1:3'),
+            ('Example Ridge Hwy 3F13 event','Re: 3F13E no light half of the OLT','1:4'),
+        ]
+        for filename,subject,key in cases:
+            with self.subTest(filename=filename):
+                self.assertEqual(match_job(f'Work Completed Spreadsheet ({filename}).xlsx',jobs,subject)['sourceKey'],key)
+
+    def test_holds_conflicting_or_ambiguous_matches(self):
+        cases=[
+            ('1410 Example Trace CRQ812345','',['1410 Example Trace CRQ812346']),
+            ('1314 Jefferson Rd CRQ158257','',['1316 Jefferson Rd CRQ158257']),
+            ('3200 Example Oak Ln 3F45E','',['3200 Example Oak Ln 3F45F']),
+            ('1600 Example Mill Rd','PID 8123457',['8123458 · 1600 Example Mill Rd Exampletown']),
+            ('1600 Example Mill Rd','',['8123457 · 1600 Example Mill Rd','8123458 · 1600 Example Mill Rd']),
+            ('Example Ridge Hwy 3F13 event','',['3F13E · cut temporary cable']),
+            ('Example Ridge Hwy 3F13F event','3F13E no light',['3F13E · cut temporary cable']),
+            ('Example Ridge Hwy 3F13 event','3F13E no light',['3F13E · cut temporary cable','3F13E · outage']),
+            ('Example Ridge Hwy 3F13 event','3F13E no light',['3F13E · cut temporary cable','Example Ridge Hwy outage 3F13E']),
+            ('123 Main Rd Unit 1','',['123 Main Rd Unit 2']),
+            ('123 Main Rd Columbia','',['123 Main Rd Florence']),
+        ]
+        for filename,subject,titles in cases:
+            with self.subTest(filename=filename,subject=subject,titles=titles):
+                jobs=[{'title':title,'sourceKey':f'1:{i}'} for i,title in enumerate(titles)]
+                self.assertIsNone(match_job(f'Work Completed Spreadsheet ({filename}).xlsx',jobs,subject))
+
 class ImportedReportTests(FinancialReportTests):
     def test_import_fills_gap_but_not_accepted_send_and_does_not_leak_mail_ids(self):
         record={'sourceKey':'123:456','amountCents':38290,'sentAt':'2026-10-20T12:00:00Z','subject':'Billing','messageId':'private','attachmentId':'private','source':'Work completed spreadsheet','sourceFile':'Example.xlsx','sourceCell':'sheet1!S4'}

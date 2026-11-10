@@ -68,27 +68,95 @@ def extract_total(raw):
 
 def normalized(value):
     value=str(value).lower().replace('’',"'")
-    for a,b in [('street','st'),('road','rd'),('drive','dr'),('highway','hwy'),('court','ct'),('lane','ln'),('boulevard','blvd'),('avenue','ave'),('mount','mt')]:
+    for a,b in [('street','st'),('road','rd'),('drive','dr'),('highway','hwy'),('court','ct'),('lane','ln'),('boulevard','blvd'),('avenue','ave'),('circle','cir'),('place','pl'),('trail','trl'),('parkway','pkwy'),('mount','mt')]:
         value=re.sub(r'\b'+a+r'\b',b,value)
     value=re.sub(r'\bcrq\s*(\d+)\b',r'crq\1',value)
     return re.sub(r'[^a-z0-9]+',' ',value).strip()
 
-def match_job(filename,jobs):
+def _references(text):
+    return {
+        'crq':set(re.findall(r'\bcrq\s*(\d+)\b',text)),
+        'pid':set(re.findall(r'\bpid\s*(\d{6,})\b',text)),
+        'node':set(re.findall(r'\b\d+[a-z]\d{1,3}[a-z]?\b',text)),
+    }
+
+
+def _same_node(left,right):
+    return left==right or left+'e'==right or right+'e'==left
+
+
+def _conflicting_references(left,right):
+    for kind in ('crq','pid'):
+        if left[kind] and right[kind] and left[kind].isdisjoint(right[kind]):
+            return True
+    a,b=left['node'],right['node']
+    return bool(a and b and not any(_same_node(x,y) for x in a for y in b))
+
+
+def _street_address(text):
+    if not re.match(r'^\d{1,6}[a-z]? [a-z]',text):
+        return None
+    # A trailing job reference can be present on either version of the address.
+    location=re.sub(r'(?: (?:crq\s*\d+|pid\s*\d{6,}|\d+[a-z]\d{1,3}[a-z]?))+$','',text)
+    # A portal title may include a city after the street. Keep directional
+    # suffixes and unit numbers, which can identify different locations.
+    match=re.match(r'^(\d{1,6}[a-z]?(?: [a-z0-9]+){1,8}? (?:st|rd|dr|hwy|ct|ln|blvd|ave|cir|pl|trl|pkwy|trace|way)\b'
+                   r'(?: (?:ne|nw|se|sw|n|s|e|w|ext)\b)?(?: (?:unit|apt|suite|lot) [a-z0-9]+)?)',location)
+    if not match:
+        return location,''
+    locality=location[match.end():].strip()
+    locality=re.sub(r'\bsc(?: \d{5}(?: \d{4})?)?$','',locality).strip()
+    return match[1],locality
+
+
+def match_job(filename,jobs,subject=''):
     name=re.sub(r'\.xlsx$','',filename,flags=re.I)
     parens=re.search(r'\((.+)\)',name)
     if parens:name=parens.group(1)
     name=re.sub(r'^work[ _-]*completed(?:[ _-]*spreadsheet)?[ _-]*','',name,flags=re.I)
     name=normalized(name.strip(' ()'))
     name=re.sub(r'\b(?:cell tower|event)\b','',name).strip()
-    crq=re.search(r'\bcrq\d+\b',name)
-    if crq:
-        exact=[j for j in jobs if crq.group() in normalized(j['title']).split()]
-        if len(exact)==1:return exact[0]
+    if not name:return None
+    file_refs,email_refs=_references(name),_references(normalized(subject))
+    if _conflicting_references(file_refs,email_refs):return None
+    address=_street_address(name)
+    confirmed_node=''
+    if len(file_refs['node'])==len(email_refs['node'])==1:
+        node=next(iter(email_refs['node']))
+        if node.endswith('e'):
+            confirmed_node=node
     candidates=[]
+    identified=[]
+    node_candidates=0
     for j in jobs:
         title=normalized(j['title']);parts=[normalized(x) for x in re.split(r'[·|]',j['title'])]
-        if name==title or name in parts:candidates.append(j)
-    return candidates[0] if len(candidates)==1 else None
+        refs=_references(title)
+        refs['pid'].update(part for part in parts if re.fullmatch(r'\d{6,}',part))
+        if _conflicting_references(file_refs,refs) or _conflicting_references(email_refs,refs):continue
+        job_addresses={value for part in parts if (value:=_street_address(part))}
+        same_address=bool(address and any(
+            street==address[0] and (not locality or not address[1] or locality==address[1])
+            for street,locality in job_addresses
+        ))
+        if address and job_addresses and not same_address:continue
+        exact_title=name==title or name in parts
+        # A CRQ in the workbook can identify a job directly. A PID from the
+        # email can narrow a location match but cannot replace the location.
+        exact_crq=bool(file_refs['crq'] & refs['crq'])
+        exact_pid=bool((file_refs['pid'] | email_refs['pid']) & refs['pid'])
+        # Road-only outage filenames may omit the final E. Require the full
+        # node in the issued email and as a standalone part of the job title.
+        node_match=not address and not job_addresses and refs['node']=={confirmed_node}
+        if node_match:
+            node_candidates+=1
+        node_only=node_match and confirmed_node in parts
+        if exact_crq or exact_title or same_address or node_only:
+            candidates.append(j)
+            if exact_crq or exact_pid:
+                identified.append(j)
+    if not identified and node_candidates>1:return None
+    matches=identified or candidates
+    return matches[0] if len(matches)==1 else None
 
 def save_candidates(db,candidates):
     initialize(db);saved=0;conflicts=0
@@ -130,7 +198,7 @@ def scan(db,store,mailbox,progress=print):
         attachments=graph._request('GET',attachroot+'?$top=100&$select=id,name,size,isInline',token=token).get('value',[])
         for a in attachments:
             if not re.search(r'work[ _-]*completed.*\.xlsx$',a['name'],re.I) or a.get('isInline'):continue
-            job=match_job(a['name'],jobs)
+            job=match_job(a['name'],jobs,m.get('subject',''))
             if not job:unmatched.append(a['name']);continue
             try:
                 if a.get('size',0)>15000000:raise ValueError('Workbook exceeds size limit')

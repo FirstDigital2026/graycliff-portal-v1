@@ -72,7 +72,7 @@ def ingest(store,db,message,attachments,key,token):
     for part in retained.walk():
         filename=str(part.get_filename() or '')
         if not re.search(r'work[ _-]*completed.*\.xlsx$',filename,re.I):continue
-        job=sheets.match_job(filename,available)
+        job=sheets.match_job(filename,available,message.get('subject',''))
         if not job:raise ValueError('No unique job matches '+filename+'. Original retained; no automatic closeout.')
         if job['jobStatus'] not in ('Field complete','Complete','Billed'):raise ValueError('Matched job is not field complete; office review required.')
         record=sheets.extract_total(part.get_payload(decode=True) or b'')
