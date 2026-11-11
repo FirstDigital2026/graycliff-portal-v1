@@ -1,4 +1,4 @@
-import hashlib, hmac, importlib.util, json, sqlite3, sys, tempfile, time, types, unittest
+import hashlib, hmac, importlib.util, json, sqlite3, sys, tempfile, time, types, unittest, threading
 from pathlib import Path
 from unittest.mock import Mock, patch
 from contextlib import contextmanager, ExitStack
@@ -7,8 +7,28 @@ with patch.dict(sys.modules, {'graph_import':types.ModuleType('graph_import'),'o
     spec=importlib.util.spec_from_file_location('isolated_intake_review',Path(__file__).with_name('intake_review.py'))
     review=importlib.util.module_from_spec(spec)
     spec.loader.exec_module(review)
+    review.intake.GUARD=threading.Lock()
 
 class ReviewTests(unittest.TestCase):
+    def test_mutating_review_waits_for_intake_and_releases_guard(self):
+        with patch.object(review,'_handle') as action:
+            def during_save(*args):
+                self.assertFalse(review.intake.GUARD.acquire(blocking=False))
+                raise ValueError('fictional interrupted save')
+            action.side_effect=during_save
+            with self.assertRaisesRegex(ValueError,'interrupted save'):
+                review.handle(Mock(),Mock(),{'action':'dismiss'})
+        self.assertTrue(review.intake.GUARD.acquire(blocking=False))
+        review.intake.GUARD.release()
+
+    def test_busy_intake_never_starts_review_mutation(self):
+        with patch.object(review.intake,'GUARD',Mock()) as guard,patch.object(review,'_handle') as action:
+            guard.acquire.return_value=False
+            with self.assertRaisesRegex(ValueError,'automatic check'):
+                review.handle(Mock(),Mock(),{'action':'dismiss'})
+            action.assert_not_called()
+            guard.release.assert_not_called()
+
     def test_dismiss_retains_original_and_never_saves_job(self):
         key='d'*64; conn=sqlite3.connect(':memory:');conn.row_factory=sqlite3.Row
         @contextmanager

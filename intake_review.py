@@ -53,6 +53,19 @@ def reviewed_item(payload, message):
     return item
 
 def handle(store, db, payload):
+    # The automatic retry also moves source mail and writes this ledger. Do not
+    # let a stale retry overwrite a dismissal or race a reviewer saving a job.
+    if payload.get('action') not in ('resolve', 'dismiss'):
+        return _handle(store, db, payload)
+    if not intake.GUARD.acquire(timeout=20):
+        raise ValueError('The mailbox is finishing an automatic check. Refresh the queue and retry your review.')
+    try:
+        return _handle(store, db, payload)
+    finally:
+        intake.GUARD.release()
+
+
+def _handle(store, db, payload):
     if payload.get('role') not in ('office','lead') or not str(payload.get('actor','')).strip():
         raise ValueError('Office or lead technician access required.')
     key = str(payload.get('messageKey',''))

@@ -720,6 +720,42 @@ def retained_import(store,key,jobkey):
     name='Email-'+key[:20]+'.eml'
     return any(a.get('name')==name for a in store.list_row_attachments(sid,matches[0]['id']))
 
+def terminal_receipt(db, key):
+    """Trust an exact durable receipt, never a recap subject or a missing email."""
+    with db() as connection:
+        tables={r[0] for r in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        review=connection.execute('SELECT actor,job_key FROM portal_intake_review WHERE message_key=?',(key,)).fetchone() if 'portal_intake_review' in tables else None
+        # Never conceal an uncertain operational save behind financial evidence.
+        if review and review['job_key']!='DISMISSED':
+            return None
+        if 'private_commercial_messages' in tables:
+            saved=connection.execute('SELECT mime,mime_hash FROM private_commercial_messages WHERE message_key=?',(key,)).fetchone()
+            if saved and saved['mime'] and hashlib.sha256(saved['mime']).hexdigest()==saved['mime_hash']:
+                complete=False
+                if 'private_commercial_jobs' in tables:
+                    job=connection.execute('SELECT state FROM private_commercial_jobs WHERE message_key=?',(key,)).fetchone()
+                    complete=bool(job and job['state']=='Complete')
+                return {'State':'Financial complete' if complete else 'Financial processing',
+                        'Detail':'Original email and attachments verified in the private financial archive. '+('Financial processing completed.' if complete else 'Continue processing in the financial dashboard.')}
+        if review:
+            return {'State':'Dismissed','Detail':'No job needed. Durable review by '+review['actor']+' confirmed; original email and files retained.'}
+    return None
+
+
+def reconcile_terminal_receipts(store, db, sid, ledger):
+    reconciled=set()
+    for row in ledger.get('rows',[]):
+        values=vals(ledger,row)
+        key=str(values.get('Message Key',''))
+        if values.get('State') not in ('Needs review','Import failed','Received') or values.get('Job Key'):
+            continue
+        receipt=terminal_receipt(db,key)
+        if receipt:
+            audit(store,sid,key,**receipt)
+            reconciled.add(key)
+    return reconciled
+
+
 def run(store, db):
     # Three historical services use this repository. Only one may consume Inbox.
     if os.getenv('RENDER_SERVICE_ID','') != 'srv-d9p0jflbedkc73ds5tn0':
@@ -739,7 +775,8 @@ def run(store, db):
         # Retry recognition holds after parser improvements. Never discard the
         # held source, and never replay an uncertain portal save automatically.
         ledger=store.get_sheet(sid,force=True)
-        holds={str(v.get('Message Key')):v for row in ledger.get('rows',[]) if (v:=vals(ledger,row)).get('State')=='Needs review' and str(v.get('Detail','')).startswith(('Incident email contains multiple possible sites.', 'NTP completion date is missing.', 'Email format needs review: no reliable PID, NTP, CRQ or outage subject.'))}
+        reconciled=reconcile_terminal_receipts(store,db,sid,ledger)
+        holds={str(v.get('Message Key')):v for row in ledger.get('rows',[]) if (v:=vals(ledger,row)).get('State')=='Needs review' and str(v.get('Message Key')) not in reconciled and str(v.get('Detail','')).startswith(('Incident email contains multiple possible sites.', 'NTP completion date is missing.', 'Email format needs review: no reliable PID, NTP, CRQ or outage subject.'))}
         retry_keys=set()
         if holds:
             for held in graph.list_folder_messages(token,review,top=40):
@@ -752,6 +789,12 @@ def run(store, db):
                 retry_keys.add(held_key)
         for message in reversed(messages):
             key = hashlib.sha256(str(message.get('internetMessageId') or message['id']).encode()).hexdigest()
+            if key in reconciled:
+                continue
+            receipt=terminal_receipt(db,key)
+            if receipt:
+                audit(store,sid,key,**receipt)
+                continue
             with db() as connection:
                 connection.execute('CREATE TABLE IF NOT EXISTS operations_mail (message_key TEXT PRIMARY KEY, job_key TEXT, state TEXT)')
                 prior = connection.execute('SELECT * FROM operations_mail WHERE message_key=?',(key,)).fetchone()
@@ -785,6 +828,9 @@ def run(store, db):
                     private_commercial=True
                     phase='saving private commercial evidence'
                     result=ingest_commercial(db,message,attachments,key,token)
+                    receipt=terminal_receipt(db,key)
+                    if receipt:
+                        audit(store,sid,key,Subject=message.get('subject',''),**{'Received At':message.get('receivedDateTime',''),**receipt})
                     stats['commercial']=stats.get('commercial',0)+1
                     # Commercial sources never become operational job files or
                     # shared intake attachments. Failed/review copies stay put.

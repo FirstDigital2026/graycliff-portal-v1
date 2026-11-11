@@ -32,6 +32,11 @@ def initialize(db):
 def candidate(message,attachments):
     subject=message.get('subject') or ''
     if re.search(r'remittance\s*(?:-\s*)?advice',subject,re.I):return True
+    # Older payroll packets use only "FW: Recap" and a person's name on the
+    # scanned PDF. Route those privately before attempting operational parsing.
+    plain_subject=re.sub(r'^(?:(?:re|fw|fwd)\s*:\s*|\[external\]\s*)+', '', subject.strip(), flags=re.I)
+    if re.fullmatch(r'(?:payroll\s+)?recaps?',plain_subject,re.I) and any(str(a.get('name') or '').lower().endswith('.pdf') for a in attachments):
+        return True
     # Identify financial packets before text extraction: scans have no text
     # layer and must never fall through into shared operational attachments.
     for a in attachments:
