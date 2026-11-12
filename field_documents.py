@@ -173,6 +173,7 @@ def classify(name, raw, ntp_source=False):
             if not NTP.search(text) and not FINANCIAL.search(text):return 'preview','Nonfinancial email preview; original NTP attachments stay with office'
         return 'office','Original email or package retained by office'
     if ext=='.pdf':
+        if re.search(r'after.?fiber|splice.?map|as.?built.?map|fiber.?map|design|drawing|technical|test.?result',name,re.I):return 'field','Technical map or test document; customer project-cost figures are permitted'
         text=pdf_text(raw)
         if ntp_facts(text):return 'office','Original NTP; pricing-free work order copy is released separately'
         if re.search(r'First\s+Digital',text,re.I) and re.search(r'\b(?:Invoice|Unit\s+(?:Rate|Price)|Sub\s*Payout|Emp\s*Payout|Billing|Payroll)\b',text,re.I):return 'office','First Digital billing document'
@@ -212,7 +213,7 @@ def _sync_row(store,sid,rid,force=False):
     try:facts=json.loads(values.get(FACTS_COLUMN) or '{}')
     except (ValueError,TypeError):facts={}
     if force or old.get('_version')!=POLICY_VERSION:old={}
-    files=sorted(store.list_row_attachments(sid,rid),key=lambda a:(a.get('createdAt',''),str(a['id'])));payloads={};is_ntp=bool(values.get('Portal NTP Due Date') or values.get('Portal Work Order') or facts)
+    files=sorted(store.list_row_attachments(sid,rid),key=lambda a:(a.get('createdAt',''),str(a['id'])));payloads={};is_ntp=bool(values.get('Portal NTP Due Date') or values.get('Portal Work Order') or facts.get('workOrder') or facts.get('prism'))
     # NTP source is established before assigning any imported pictures to the field.
     for a in files:
         if a['name'].lower().endswith('.eml') and str(a['id']) not in old:
@@ -245,7 +246,8 @@ def _sync_row(store,sid,rid,force=False):
             if instructions:
                 prior=facts.get('comments','')
                 facts['comments']=(prior+'\n'+instructions if prior and prior not in instructions else instructions)[:2500]
-        for name,text,data in documents(raw or b'',a['name']):
+        source_documents=documents(raw or b'',a['name']) if ext=='.zip' or NTP.search(a['name']) or reason.startswith('Original NTP') else []
+        for name,text,data in source_documents:
             found=ntp_facts(text,normalize_id(values.get('Portal Work Order')))
             if found:facts.update(found)
             if ext=='.zip' and classify(name,data,is_ntp)[0]=='field':extracted.append((name,data))

@@ -17,6 +17,10 @@ Comments: NTP for push light
 '''
 
 class FieldDocumentTests(unittest.TestCase):
+    def test_customer_map_is_released_without_parsing_customer_costs(self):
+        with patch.object(f,'pdf_text',side_effect=AssertionError('Technical map need not be parsed')):
+            self.assertEqual(f.classify('7061750_AFTER_FIBER.pdf',b'map',True)[0],'field')
+        self.assertEqual(f.classify('Invoice_AFTER_FIBER.pdf',b'map',True)[0],'office')
     def test_ntp_field_copy_is_reused_and_stays_released(self):
         import field_pdf
         class Store:
