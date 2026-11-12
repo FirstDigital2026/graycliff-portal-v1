@@ -24,7 +24,7 @@ class FieldDocumentTests(unittest.TestCase):
             def list_row_attachments(self,*args):return [{'id':1000000000000000+i,'name':'field-photo-'+str(i)+'.jpg'} for i in range(100)]
             def update_row(self,sid,rid,values):self.saved=values
         store=Store();result=f.sync_row(store,1,5)
-        self.assertEqual(result['files'],100);self.assertLess(len(store.saved[f.FILES_COLUMN]),3900);self.assertEqual(len(json.loads(store.saved[f.FILES_COLUMN])),100)
+        self.assertEqual(result['files'],100);self.assertLess(len(store.saved[f.FILES_COLUMN]),3900);self.assertEqual(len(json.loads(store.saved[f.FILES_COLUMN]))-1,100)
         self.assertNotIn('Status',store.saved)
     def test_pdf_worker_limits_and_timeout_fail_closed(self):
         with patch.object(f.subprocess,'run') as run:
@@ -44,9 +44,23 @@ class FieldDocumentTests(unittest.TestCase):
         self.assertEqual(f.classify('NTP.pdf',b'')[0],'office')
         self.assertEqual(f.classify('source.zip',b'')[0],'office')
     def test_scanned_documents_require_review(self):
-        with patch.object(f,'pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'review')
-        self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'review')
+        import sys,types
+        scan=types.ModuleType('commercial_scan');scan.read_pages=lambda raw:(_ for _ in ()).throw(ValueError('unreadable'))
+        with patch.dict(sys.modules,{'commercial_scan':scan}),patch.object(f,'pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'review')
+        with patch.object(f,'image_text',side_effect=ValueError('unreadable')):self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'review')
         self.assertEqual(f.classify('field-photo.jpg',b'photo',False)[0],'field')
+    def test_ntp_package_does_not_hide_nonfinancial_map_or_photo(self):
+        with patch.object(f,'pdf_text',return_value='Fiber splice map. Refer to NTP for permitted start date. Ports 1 through 24.'):
+            self.assertEqual(f.classify('AFTER_FIBER.pdf',b'map',True)[0],'field')
+        with patch.object(f,'image_text',return_value='Fiber ports 1 to 24'):
+            self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'field')
+        with patch.object(f,'image_text',return_value='Unit Price: $100'):
+            self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'office')
+    def test_nonfinancial_workbook_released_pricing_workbook_blocked(self):
+        with patch.object(f,'spreadsheet_text',return_value='Splice ID Quantity Fiber ports'):
+            self.assertEqual(f.classify('asbuilt.xlsx',b'workbook',True)[0],'field')
+        with patch.object(f,'spreadsheet_text',return_value='Unit Price 100'):
+            self.assertEqual(f.classify('asbuilt.xlsx',b'workbook',True)[0],'office')
     def test_phone_shifted_left_of_column_heading(self):
         text=SAMPLE.replace('EXAMPLE,CONTACT           (555) 555-0100','EXAMPLE,CONTACT (555) 555-0100')
         facts=f.ntp_facts(text)

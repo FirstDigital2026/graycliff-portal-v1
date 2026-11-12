@@ -1,6 +1,6 @@
 """Extract nonfinancial NTP facts; retain commercial source files for office use."""
 from __future__ import annotations
-import io,json,re,zipfile,hashlib,subprocess,sys
+import io,json,re,zipfile,hashlib,subprocess,sys,tempfile,os
 from pathlib import PurePath
 from email import policy
 from email.parser import BytesParser
@@ -9,6 +9,7 @@ import graph_import as graph
 FACTS_COLUMN='Portal Field Instructions'
 FILES_COLUMN='Portal Field Files'
 REVIEW_COLUMN='Portal Field Document Review'
+POLICY_VERSION='field-v2'
 FINANCIAL=re.compile(r'\b(?:PO\s*Amount|P\.?O\.?\s*(?:Amount|Value|Total)|Purchase\s*Order\s*Amount|Unit\s*(?:Rate|Price)|(?:Total|Extended)\s*(?:Price|Cost|Amount)|Sub\s*Payout|Emp\s*Payout|Invoice\s*Total)\b|[$£€]\s*\d',re.I)
 NTP=re.compile(r'\b(?:NTP|Notice\s+to\s+Proceed)\b',re.I)
 FACT_KEYS=('prism','workOrder','purchaseOrder','constructionType','coordinator','workOrderDate','estimatedCompletion','vendor','issuedBy','jobName','address','cityStateZip','siteContact','sitePhone','comments','permitNotice')
@@ -113,26 +114,61 @@ def email_text(raw):
             except (LookupError,UnicodeError,AttributeError):pass
     return '\n'.join(parts)
 
+def image_text(raw):
+    # Reuse the service's private OCR. No customer documents leave the service.
+    from pathlib import Path
+    from PIL import Image
+    with tempfile.TemporaryDirectory(prefix='field-review-') as folder:
+        root=Path(folder)
+        with Image.open(io.BytesIO(raw)) as im:
+            im.thumbnail((3000,3000));im.convert('RGB').save(root/'image.png')
+            width,height=im.size
+        item={'page':1,'path':str(root/'image.png'),'lowPath':str(root/'image.png'),'width':width,'height':height,'lowWidth':width,'lowHeight':height}
+        (root/'manifest.json').write_text(json.dumps([item]))
+        result=subprocess.run(['node','--max-old-space-size=160',str(Path(__file__).with_name('commercial_ocr.cjs')),str(root/'manifest.json')],capture_output=True,text=True,timeout=120,check=True)
+        return '\n'.join(p['text'] for p in json.loads(result.stdout))
+
+def document_is_private(text):
+    return bool(FINANCIAL.search(text) or ntp_facts(text) or re.search(r'Notice\s+to\s+Proceed',text,re.I))
+
+def spreadsheet_text(raw):
+    # Read shared strings AND inline strings; never execute workbook macros.
+    import xml.etree.ElementTree as ET
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        members=[i for i in z.infolist() if i.filename.startswith('xl/') and i.filename.endswith('.xml')]
+        if sum(i.file_size for i in members)>20*1024*1024:raise ValueError('Workbook too large to review')
+        return '\n'.join(' '.join(ET.fromstring(z.read(i)).itertext()) for i in members)
+
 def classify(name, raw, ntp_source=False):
     ext=PurePath(name).suffix.lower()
     if NTP.search(name) or re.search(r'(?:rate.?card|billing|invoice|remittance|purchase.?order)',name,re.I):return 'office','NTP or commercial source document'
     if ext in ('.zip','.msg','.eml'):
         if ext=='.eml':
             text=email_text(raw)
-            if not ntp_source and not NTP.search(text) and not FINANCIAL.search(text):return 'preview','Field email preview; original download stays with office'
+            if not NTP.search(text) and not FINANCIAL.search(text):return 'preview','Nonfinancial email preview; original NTP attachments stay with office'
         return 'office','Original email or package retained by office'
     if ext=='.pdf':
         text=pdf_text(raw)
-        if NTP.search(text) or FINANCIAL.search(text):return 'office','NTP or commercial source document'
-        return ('field','Technical PDF; no commercial fields detected') if len(text.strip())>30 else ('review','Image-only PDF requires office review')
+        if len(text.strip())<30:
+            try:
+                from commercial_scan import read_pages
+                text='\n'.join(p['text'] for p in read_pages(raw))
+            except Exception:return 'review','PDF could not be checked for NTP or pricing'
+        if document_is_private(text):return 'office','NTP or commercial source document'
+        return 'field','Technical PDF checked for NTP and pricing'
     if ext in ('.jpg','.jpeg','.png','.webp','.gif','.heic'):
-        return ('review','Image from NTP package requires office review') if ntp_source else ('field','Field photo')
+        if not ntp_source:return 'field','Field photo'
+        try:text=image_text(raw)
+        except Exception:return 'review','Image could not be checked for NTP or pricing'
+        return ('office','NTP or pricing image') if document_is_private(text) else ('field','Nonfinancial image')
     if ext in ('.xlsx','.xlsm','.xls'):
-        return 'review','Office review required for spreadsheet source documents'
+        try:text=spreadsheet_text(raw)
+        except Exception:return 'review','Spreadsheet could not be checked for NTP or pricing'
+        return ('office','NTP or pricing workbook') if document_is_private(text) else ('field','Nonfinancial workbook')
     if ext in ('.sor',):return 'field','Field test file'
     if ext in ('.txt','.csv'):
         text=raw.decode('utf-8',errors='replace')
-        if not NTP.search(text) and not FINANCIAL.search(text):return 'field','Nonfinancial field text'
+        if not document_is_private(text):return 'field','Nonfinancial field text'
     return 'review','Office review required before field release'
 
 def ensure_columns(store,sid):
@@ -146,7 +182,7 @@ def sync_row(store,sid,rid,force=False):
     except (ValueError,TypeError):old={}
     try:facts=json.loads(values.get(FACTS_COLUMN) or '{}')
     except (ValueError,TypeError):facts={}
-    if force:old={}
+    if force or old.get('_version')!=POLICY_VERSION:old={}
     files=sorted(store.list_row_attachments(sid,rid),key=lambda a:(a.get('createdAt',''),str(a['id'])));payloads={};is_ntp=bool(values.get('Portal NTP Due Date') or values.get('Portal Work Order') or facts)
     # NTP source is established before assigning any imported pictures to the field.
     for a in files:
@@ -160,18 +196,19 @@ def sync_row(store,sid,rid,force=False):
             policy_map[aid]=old[aid];continue
         ext=PurePath(a['name']).suffix.lower()
         raw=payloads.get(aid)
-        if raw is None and ext not in ('.jpg','.jpeg','.png','.webp','.gif','.heic','.sor'):
+        if raw is None and (is_ntp or ext not in ('.jpg','.jpeg','.png','.webp','.gif','.heic','.sor')):
             raw,_,_=store.download_attachment(sid,a['id'])
         mode,reason=classify(a['name'],raw or b'',is_ntp)
         policy_map[aid]={'mode':mode,'reason':reason}
+        if ext=='.eml':
+            instructions=safe_text(email_text(raw or b''))
+            if instructions:
+                prior=facts.get('comments','')
+                facts['comments']=(prior+'\n'+instructions if prior and prior not in instructions else instructions)[:2500]
         for name,text,data in documents(raw or b'',a['name']):
             found=ntp_facts(text,normalize_id(values.get('Portal Work Order')))
             if found:facts.update(found)
             if ext=='.zip' and classify(name,data,is_ntp)[0]=='field':extracted.append((name,data))
-    if facts:
-        for a in files:
-            if PurePath(a['name']).suffix.lower() in ('.jpg','.jpeg','.png','.webp','.gif','.heic'):
-                policy_map[str(a['id'])]={'mode':'review','reason':'Image from NTP source requires office review'}
     existing_names={a['name'] for a in files}
     for name,data in extracted:
         safe='Field-'+PurePath(name).stem[:80]+'-'+hashlib.sha256(data).hexdigest()[:10]+'.pdf'
@@ -182,16 +219,42 @@ def sync_row(store,sid,rid,force=False):
             if a['name'].startswith('Field-') and str(a['id']) not in policy_map:policy_map[str(a['id'])]={'mode':'field','reason':'Nonfinancial technical PDF extracted from source package'}
     facts={k:safe_text(v) for k,v in facts.items() if k in FACT_KEYS and v and not FINANCIAL.search(str(v))}
     compact_policy={aid:{'mode':entry['mode']} for aid,entry in policy_map.items()}
+    compact_policy['_version']=POLICY_VERSION
     update={FACTS_COLUMN:json.dumps(facts,separators=(',',':')),FILES_COLUMN:json.dumps(compact_policy,separators=(',',':')),REVIEW_COLUMN:''}
     # Smartsheet TEXT_NUMBER cells allow 4,000 characters. No policy is truncated.
     if any(len(v)>3900 for v in update.values()):raise ValueError('Field-document metadata needs office review; no partial policy was saved.')
     store.update_row(sid,rid,update)
     return {'facts':len(facts),'files':len(policy_map),'officeOnly':sum(p['mode'] in ('office','review') for p in policy_map.values())}
 
+def backfill(store,limit=2):
+    """Migrate existing operational rows durably in small, retryable batches."""
+    done=0
+    for sid in (2515846899388292,8067039099834244):
+        sheet=store.get_sheet(sid,force=True)
+        cols={int(c['id']):c['title'] for c in sheet['columns']}
+        for row in sheet['rows']:
+            values={cols.get(int(c['columnId'])):c.get('value','') for c in row['cells']}
+            try:policy=json.loads(values.get(FILES_COLUMN) or '{}')
+            except (ValueError,TypeError):policy={}
+            if policy.get('_version')==POLICY_VERSION:continue
+            try:sync_row(store,sid,row['id'])
+            except Exception:
+                import logging
+                logging.getLogger(__name__).exception('Field document migration failed for row %s',row['id'])
+            done+=1
+            if done>=limit:return done
+    return done
+
 def install(app,store):
     # Legacy email intake uses the same PDF reader. Keep it outside the web
     # process and under the same limits, including before field-file extraction.
     graph._pdf_text=pdf_text
+    module=sys.modules.get(app.import_name)
+    scheduler=getattr(module,'scheduler',None)
+    if scheduler:
+        from datetime import datetime,timedelta,timezone
+        from memory_runtime import background_job
+        scheduler.add_job(background_job(lambda:backfill(store),store),'interval',minutes=2,id='field_document_visibility_v2',replace_existing=True,max_instances=1,next_run_time=datetime.now(timezone.utc)+timedelta(seconds=20))
     import os,time,hmac
     from flask import request,jsonify
     path='/api/portal/field-review'
