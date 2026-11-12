@@ -9,7 +9,7 @@ import graph_import as graph
 FACTS_COLUMN='Portal Field Instructions'
 FILES_COLUMN='Portal Field Files'
 REVIEW_COLUMN='Portal Field Document Review'
-POLICY_VERSION='field-v6'
+POLICY_VERSION='field-v7'
 FINANCIAL=re.compile(r'\b(?:PO\s*Amount|P\.?O\.?\s*(?:Amount|Value|Total)|Purchase\s*Order\s*Amount|Unit\s*(?:Rate|Price)|(?:Total|Extended)\s*(?:Price|Cost|Amount)|Sub\s*Payout|Emp\s*Payout|Invoice\s*Total)\b|[$£€]\s*\d',re.I)
 NTP=re.compile(r'\b(?:NTP|Notice\s+to\s+Proceed)\b',re.I)
 FACT_KEYS=('prism','workOrder','purchaseOrder','constructionType','coordinator','workOrderDate','estimatedCompletion','vendor','issuedBy','jobName','address','cityStateZip','siteContact','sitePhone','comments','permitNotice')
@@ -233,7 +233,7 @@ def _sync_row(store,sid,rid,force=False):
                 from field_pdf import prepare
                 clean,redactions=prepare(raw or b'')
                 mode,reason='office','Original NTP retained privately; pricing-free field work order created'
-                extracted.append(('Work-Order-'+normalize_id(values.get('Portal Work Order') or rid)+'.pdf',clean))
+                extracted.append(('Work-Order-'+normalize_id(values.get('Portal Work Order') or rid)+'-'+hashlib.sha256(raw or b'').hexdigest()[:10]+'.pdf',clean))
                 prepared=True
             except Exception:
                 mode,reason='review','PDF needs office review before field release'
@@ -249,14 +249,15 @@ def _sync_row(store,sid,rid,force=False):
             found=ntp_facts(text,normalize_id(values.get('Portal Work Order')))
             if found:facts.update(found)
             if ext=='.zip' and classify(name,data,is_ntp)[0]=='field':extracted.append((name,data))
-    existing_names={a['name'] for a in files}
+    existing_names={a['name'] for a in files};released_names=set()
     for name,data in extracted:
-        safe='Field-'+PurePath(name).stem[:80]+'-'+hashlib.sha256(data).hexdigest()[:10]+'.pdf'
+        safe=('Field-'+PurePath(name).stem+'.pdf') if name.startswith('Work-Order-') else ('Field-'+PurePath(name).stem[:80]+'-'+hashlib.sha256(data).hexdigest()[:10]+'.pdf')
+        released_names.add(safe)
         if safe not in existing_names:
             store.attach_file_to_row(sid,rid,filename=safe,mime_type='application/pdf',data=data);existing_names.add(safe)
     if extracted:
         for a in store.list_row_attachments(sid,rid):
-            if a['name'].startswith('Field-') and str(a['id']) not in policy_map:policy_map[str(a['id'])]={'mode':'field','reason':'Nonfinancial technical PDF extracted from source package'}
+            if a['name'] in released_names:policy_map[str(a['id'])]={'mode':'field','reason':'Pricing-free field work order or technical document'}
     facts={k:safe_text(v) for k,v in facts.items() if k in FACT_KEYS and v and not FINANCIAL.search(str(v))}
     compact_policy={aid:{'mode':entry['mode']} for aid,entry in policy_map.items()}
     compact_policy['_version']=POLICY_VERSION

@@ -71,7 +71,7 @@ def sanitize(raw,folder):
     doc.set_metadata({})
     while doc.embfile_count():doc.embfile_del(0)
     doc.set_xml_metadata('')
-    out=doc.tobytes(garbage=4,deflate=True,clean=True);doc.close()
+    out=doc.tobytes(garbage=4,deflate=True,clean=True,no_new_id=True);doc.close()
     return out,changed
 
 def prepare(raw):

@@ -17,6 +17,24 @@ Comments: NTP for push light
 '''
 
 class FieldDocumentTests(unittest.TestCase):
+    def test_ntp_field_copy_is_reused_and_stays_released(self):
+        import field_pdf
+        class Store:
+            def __init__(self):
+                self.files=[{'id':10,'name':'NTP.pdf'}];self.saved={};self.uploads=0
+            def get_sheet(self,*args,**kwargs):
+                names=(f.FACTS_COLUMN,f.FILES_COLUMN,f.REVIEW_COLUMN,'Portal Work Order')
+                return {'columns':[{'id':i+1,'title':n} for i,n in enumerate(names)],'rows':[{'id':5,'cells':[{'columnId':i+1,'value':self.saved.get(n,'7654321' if n=='Portal Work Order' else '')} for i,n in enumerate(names)]}]}
+            def list_row_attachments(self,*args):return list(self.files)
+            def download_attachment(self,sid,aid):return (b'original-ntp' if aid==10 else b'field-copy'),'application/pdf','file.pdf'
+            def update_row(self,sid,rid,values):self.saved.update(values)
+            def attach_file_to_row(self,*args,**kwargs):
+                self.uploads+=1;self.files.append({'id':11,'name':kwargs['filename']})
+        store=Store()
+        with patch.object(field_pdf,'prepare',return_value=(b'field-copy',1)),patch.object(f,'pdf_text',return_value=SAMPLE):
+            f._sync_row(store,1,5,force=True);f._sync_row(store,1,5,force=True)
+        self.assertEqual(store.uploads,1)
+        policy=json.loads(store.saved[f.FILES_COLUMN]);self.assertEqual(policy['10']['mode'],'office');self.assertEqual(policy['11']['mode'],'field')
     def test_large_photo_job_fits_sheet_metadata_without_losing_files(self):
         class Store:
             saved=None
