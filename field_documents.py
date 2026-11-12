@@ -9,7 +9,7 @@ import graph_import as graph
 FACTS_COLUMN='Portal Field Instructions'
 FILES_COLUMN='Portal Field Files'
 REVIEW_COLUMN='Portal Field Document Review'
-POLICY_VERSION='field-v2'
+POLICY_VERSION='field-v3'
 FINANCIAL=re.compile(r'\b(?:PO\s*Amount|P\.?O\.?\s*(?:Amount|Value|Total)|Purchase\s*Order\s*Amount|Unit\s*(?:Rate|Price)|(?:Total|Extended)\s*(?:Price|Cost|Amount)|Sub\s*Payout|Emp\s*Payout|Invoice\s*Total)\b|[$£€]\s*\d',re.I)
 NTP=re.compile(r'\b(?:NTP|Notice\s+to\s+Proceed)\b',re.I)
 FACT_KEYS=('prism','workOrder','purchaseOrder','constructionType','coordinator','workOrderDate','estimatedCompletion','vendor','issuedBy','jobName','address','cityStateZip','siteContact','sitePhone','comments','permitNotice')
@@ -114,19 +114,43 @@ def email_text(raw):
             except (LookupError,UnicodeError,AttributeError):pass
     return '\n'.join(parts)
 
-def image_text(raw):
-    # Reuse the service's private OCR. No customer documents leave the service.
+def scan_text(raw,pdf=False):
+    # All rendering is bounded and outside the web worker. Share the existing
+    # OCR lock with billing so neither task can start a second OCR worker.
     from pathlib import Path
-    from PIL import Image
-    with tempfile.TemporaryDirectory(prefix='field-review-') as folder:
-        root=Path(folder)
-        with Image.open(io.BytesIO(raw)) as im:
-            im.thumbnail((3000,3000));im.convert('RGB').save(root/'image.png')
-            width,height=im.size
-        item={'page':1,'path':str(root/'image.png'),'lowPath':str(root/'image.png'),'width':width,'height':height,'lowWidth':width,'lowHeight':height}
-        (root/'manifest.json').write_text(json.dumps([item]))
-        result=subprocess.run(['node','--max-old-space-size=160',str(Path(__file__).with_name('commercial_ocr.cjs')),str(root/'manifest.json')],capture_output=True,text=True,timeout=120,check=True)
-        return '\n'.join(p['text'] for p in json.loads(result.stdout))
+    import fcntl
+    with open(Path(tempfile.gettempdir())/'graycliff-commercial-ocr.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        with tempfile.TemporaryDirectory(prefix='field-review-') as folder:
+            root=Path(folder);source=root/('source.pdf' if pdf else 'source.image');source.write_bytes(raw)
+            program='''
+import sys,json,resource
+from pathlib import Path
+resource.setrlimit(resource.RLIMIT_AS,(220*1024*1024,220*1024*1024))
+resource.setrlimit(resource.RLIMIT_CPU,(20,20))
+root=Path(sys.argv[1]);pdf=sys.argv[2]=='pdf';items=[]
+if pdf:
+ import pypdfium2 as p
+ doc=p.PdfDocument(root/'source.pdf')
+ if len(doc)>12:raise ValueError('Too many pages')
+ pages=range(len(doc))
+else:pages=range(1)
+for i in pages:
+ if pdf:
+  page=doc[i];w,h=page.get_size();bitmap=page.render(scale=min(2,1800/max(w,h)));im=bitmap.to_pil()
+ else:
+  from PIL import Image
+  im=Image.open(root/'source.image');im.thumbnail((1800,1800))
+ path=root/('page-'+str(i)+'.png');im.convert('RGB').save(path);w,h=im.size;im.close()
+ if pdf:bitmap.close();page.close()
+ items.append(dict(page=i+1,path=str(path),lowPath=str(path),width=w,height=h,lowWidth=w,lowHeight=h))
+(root/'manifest.json').write_text(json.dumps(items))
+'''
+            subprocess.run([sys.executable,'-c',program,str(root),'pdf' if pdf else 'image'],capture_output=True,timeout=30,check=True)
+            result=subprocess.run(['node','--max-old-space-size=128',str(Path(__file__).with_name('commercial_ocr.cjs')),str(root/'manifest.json')],capture_output=True,text=True,timeout=120,check=True)
+            return '\n'.join(p['text'] for p in json.loads(result.stdout))
+
+def image_text(raw):return scan_text(raw)
 
 def document_is_private(text):
     return bool(FINANCIAL.search(text) or ntp_facts(text) or re.search(r'Notice\s+to\s+Proceed',text,re.I))
@@ -142,6 +166,7 @@ def spreadsheet_text(raw):
 def classify(name, raw, ntp_source=False):
     ext=PurePath(name).suffix.lower()
     if NTP.search(name) or re.search(r'(?:rate.?card|billing|invoice|remittance|purchase.?order)',name,re.I):return 'office','NTP or commercial source document'
+    if re.search(r'(?:graycliff-logo|logo-tag|facebook|linkedin|twitter)',name,re.I):return 'office','Email signature graphic'
     if ext in ('.zip','.msg','.eml'):
         if ext=='.eml':
             text=email_text(raw)
@@ -151,8 +176,7 @@ def classify(name, raw, ntp_source=False):
         text=pdf_text(raw)
         if len(text.strip())<30:
             try:
-                from commercial_scan import read_pages
-                text='\n'.join(p['text'] for p in read_pages(raw))
+                text=scan_text(raw,pdf=True)
             except Exception:return 'review','PDF could not be checked for NTP or pricing'
         if document_is_private(text):return 'office','NTP or commercial source document'
         return 'field','Technical PDF checked for NTP and pricing'
@@ -177,6 +201,13 @@ def ensure_columns(store,sid):
     return store.get_sheet(sid,force=True)
 
 def sync_row(store,sid,rid,force=False):
+    from pathlib import Path
+    import fcntl
+    with open(Path(tempfile.gettempdir())/'graycliff-field-review.lock','a') as lock:
+        fcntl.flock(lock,fcntl.LOCK_EX)
+        return _sync_row(store,sid,rid,force)
+
+def _sync_row(store,sid,rid,force=False):
     sheet=ensure_columns(store,sid);cols={int(c['id']):c['title'] for c in sheet['columns']};row=next(r for r in sheet['rows'] if int(r['id'])==int(rid));values={cols.get(int(c['columnId'])):c.get('value','') for c in row['cells']}
     try:old=json.loads(values.get(FILES_COLUMN) or '{}')
     except (ValueError,TypeError):old={}
@@ -226,13 +257,16 @@ def sync_row(store,sid,rid,force=False):
     store.update_row(sid,rid,update)
     return {'facts':len(facts),'files':len(policy_map),'officeOnly':sum(p['mode'] in ('office','review') for p in policy_map.values())}
 
-def backfill(store,limit=2):
+def backfill(store,limit=1):
     """Migrate existing operational rows durably in small, retryable batches."""
     done=0
     for sid in (2515846899388292,8067039099834244):
         sheet=store.get_sheet(sid,force=True)
         cols={int(c['id']):c['title'] for c in sheet['columns']}
-        for row in sheet['rows']:
+        def priority(row):
+            v={cols.get(int(c['columnId'])):c.get('value','') for c in row['cells']}
+            return (str(v.get('Status','')).lower() in ('billed','canceled','cancelled','closed','complete'), '7061750' not in str(v))
+        for row in sorted(sheet['rows'],key=priority):
             values={cols.get(int(c['columnId'])):c.get('value','') for c in row['cells']}
             try:policy=json.loads(values.get(FILES_COLUMN) or '{}')
             except (ValueError,TypeError):policy={}

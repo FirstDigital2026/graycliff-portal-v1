@@ -23,7 +23,7 @@ class FieldDocumentTests(unittest.TestCase):
             def get_sheet(self,*args,**kwargs):return {'columns':[{'id':i+1,'title':n} for i,n in enumerate((f.FACTS_COLUMN,f.FILES_COLUMN,f.REVIEW_COLUMN,'Task Name'))],'rows':[{'id':5,'cells':[{'columnId':4,'value':'Synthetic photo job'}]}]}
             def list_row_attachments(self,*args):return [{'id':1000000000000000+i,'name':'field-photo-'+str(i)+'.jpg'} for i in range(100)]
             def update_row(self,sid,rid,values):self.saved=values
-        store=Store();result=f.sync_row(store,1,5)
+        store=Store();result=f._sync_row(store,1,5)
         self.assertEqual(result['files'],100);self.assertLess(len(store.saved[f.FILES_COLUMN]),3900);self.assertEqual(len(json.loads(store.saved[f.FILES_COLUMN]))-1,100)
         self.assertNotIn('Status',store.saved)
     def test_pdf_worker_limits_and_timeout_fail_closed(self):
@@ -44,9 +44,7 @@ class FieldDocumentTests(unittest.TestCase):
         self.assertEqual(f.classify('NTP.pdf',b'')[0],'office')
         self.assertEqual(f.classify('source.zip',b'')[0],'office')
     def test_scanned_documents_require_review(self):
-        import sys,types
-        scan=types.ModuleType('commercial_scan');scan.read_pages=lambda raw:(_ for _ in ()).throw(ValueError('unreadable'))
-        with patch.dict(sys.modules,{'commercial_scan':scan}),patch.object(f,'pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'review')
+        with patch.object(f,'scan_text',side_effect=ValueError('unreadable')),patch.object(f,'pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'review')
         with patch.object(f,'image_text',side_effect=ValueError('unreadable')):self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'review')
         self.assertEqual(f.classify('field-photo.jpg',b'photo',False)[0],'field')
     def test_ntp_package_does_not_hide_nonfinancial_map_or_photo(self):
