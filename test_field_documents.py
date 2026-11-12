@@ -66,7 +66,7 @@ class FieldDocumentTests(unittest.TestCase):
         self.assertEqual(f.classify('NTP.pdf',b'')[0],'office')
         self.assertEqual(f.classify('source.zip',b'')[0],'office')
     def test_scanned_documents_require_review(self):
-        with patch.object(f,'scan_text',side_effect=ValueError('unreadable')),patch.object(f,'pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'review')
+        with patch.object(f,'scan_text',side_effect=ValueError('unreadable')),patch.object(f,'pdf_text',return_value=''):self.assertEqual(f.classify('scan.pdf',b'%PDF-test')[0],'field')
         with patch.object(f,'image_text',side_effect=ValueError('unreadable')):self.assertEqual(f.classify('image001.jpg',b'photo',True)[0],'review')
         self.assertEqual(f.classify('field-photo.jpg',b'photo',False)[0],'field')
     def test_ntp_package_does_not_hide_nonfinancial_map_or_photo(self):
@@ -79,8 +79,17 @@ class FieldDocumentTests(unittest.TestCase):
     def test_nonfinancial_workbook_released_pricing_workbook_blocked(self):
         with patch.object(f,'spreadsheet_text',return_value='Splice ID Quantity Fiber ports'):
             self.assertEqual(f.classify('asbuilt.xlsx',b'workbook',True)[0],'field')
-        with patch.object(f,'spreadsheet_text',return_value='Unit Price 100'):
+        with patch.object(f,'spreadsheet_text',return_value='First Digital Unit Price 100'):
             self.assertEqual(f.classify('asbuilt.xlsx',b'workbook',True)[0],'office')
+        with patch.object(f,'spreadsheet_text',return_value='Spectrum Total Project Cost 836'):
+            self.assertEqual(f.classify('scope.xlsx',b'workbook',True)[0],'field')
+    def test_job_documents_and_maps_released_billing_documents_private(self):
+        import zipfile
+        raw=io.BytesIO()
+        with zipfile.ZipFile(raw,'w') as z:z.writestr('word/document.xml','<document><p>CRQ impact and technician instructions</p></document>')
+        self.assertEqual(f.classify('IMPACT OF CRQ.docx',raw.getvalue(),True)[0],'field')
+        self.assertEqual(f.classify('route.kmz',b'map',True)[0],'field')
+        self.assertEqual(f.classify('First Digital Invoice.pdf',b'private',True)[0],'office')
     def test_phone_shifted_left_of_column_heading(self):
         text=SAMPLE.replace('EXAMPLE,CONTACT           (555) 555-0100','EXAMPLE,CONTACT (555) 555-0100')
         facts=f.ntp_facts(text)

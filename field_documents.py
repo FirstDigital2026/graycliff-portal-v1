@@ -173,21 +173,34 @@ def classify(name, raw, ntp_source=False):
             if not NTP.search(text) and not FINANCIAL.search(text):return 'preview','Nonfinancial email preview; original NTP attachments stay with office'
         return 'office','Original email or package retained by office'
     if ext=='.pdf':
-        if re.search(r'after.?fiber|splice.?map|as.?built.?map|fiber.?map|design|drawing|technical|test.?result',name,re.I):return 'field','Technical map or test document; customer project-cost figures are permitted'
+        if re.search(r'(?:after|before).?fiber|overview.*fiber|schematic.*fiber|FWM|site.?plans?|traffic.?control|permit|\d{6,}_DETAIL|markup|splice.?map|as.?built.?map|fiber.?map|design|drawing|technical|test.?result',name,re.I):return 'field','Technical map, permit or test document; customer project-cost figures are permitted'
         text=pdf_text(raw)
         if ntp_facts(text):return 'office','Original NTP; pricing-free work order copy is released separately'
         if re.search(r'First\s+Digital',text,re.I) and re.search(r'\b(?:Invoice|Unit\s+(?:Rate|Price)|Sub\s*Payout|Emp\s*Payout|Billing|Payroll)\b',text,re.I):return 'office','First Digital billing document'
         if len(text.strip())>30 or re.search(r'after.?fiber|splice|as.?built|fiber.?map|design|drawing|technical|test.?result',name,re.I):return 'field','Technical job document; customer project-cost figures are permitted'
-        return 'review','Unreadable PDF requires office review'
+        return 'field','Job PDF; First Digital billing and original NTP documents are excluded separately'
     if ext in ('.jpg','.jpeg','.png','.webp','.gif','.heic'):
         if not ntp_source:return 'field','Field photo'
         try:text=image_text(raw)
         except Exception:return 'review','Image could not be checked for NTP or pricing'
         return ('office','NTP or pricing image') if document_is_private(text) else ('field','Nonfinancial image')
     if ext in ('.xlsx','.xlsm','.xls'):
+        if re.search(r'EEID.*SOW',name,re.I):return 'field','Customer engineering scope of work'
         try:text=spreadsheet_text(raw)
         except Exception:return 'review','Spreadsheet could not be checked for NTP or pricing'
-        return ('office','NTP or pricing workbook') if document_is_private(text) else ('field','Nonfinancial workbook')
+        private=bool(re.search(r'First\s+Digital',text,re.I) and FINANCIAL.search(text))
+        return ('office','First Digital pricing workbook') if private else ('field','Job workbook; upstream project figures are permitted')
+    if ext in ('.kml','.kmz'):return 'field','Geographic job map'
+    if ext=='.docx':
+        try:
+            import xml.etree.ElementTree as ET
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                item=z.getinfo('word/document.xml')
+                if item.file_size>5*1024*1024:raise ValueError('Document too large')
+                text=' '.join(ET.fromstring(z.read(item)).itertext())
+        except Exception:return 'review','Word document could not be read'
+        private=bool(re.search(r'First\s+Digital',text,re.I) and FINANCIAL.search(text))
+        return ('office','First Digital billing document') if private else ('field','Job instructions or correspondence')
     if ext in ('.sor',):return 'field','Field test file'
     if ext in ('.txt','.csv'):
         text=raw.decode('utf-8',errors='replace')
@@ -222,7 +235,7 @@ def _sync_row(store,sid,rid,force=False):
     policy_map={};extracted=[]
     for a in files:
         aid=str(a['id'])
-        if aid in old:
+        if aid in old and old[aid].get('mode')!='review':
             policy_map[aid]=old[aid];continue
         ext=PurePath(a['name']).suffix.lower()
         raw=payloads.get(aid)
@@ -283,7 +296,8 @@ def backfill(store,limit=1):
             try:policy=json.loads(values.get(FILES_COLUMN) or '{}')
             except (ValueError,TypeError):policy={}
             attachment_ids={str(a['id']) for a in row.get('attachments',[])}
-            if policy.get('_version')==POLICY_VERSION and attachment_ids.issubset(policy):continue
+            needs_review=any(isinstance(p,dict) and p.get('mode')=='review' for p in policy.values())
+            if policy.get('_version')==POLICY_VERSION and attachment_ids.issubset(policy) and not needs_review:continue
             try:sync_row(store,sid,row['id'])
             except Exception:
                 import logging
