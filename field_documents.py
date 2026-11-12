@@ -9,7 +9,7 @@ import graph_import as graph
 FACTS_COLUMN='Portal Field Instructions'
 FILES_COLUMN='Portal Field Files'
 REVIEW_COLUMN='Portal Field Document Review'
-POLICY_VERSION='field-v4'
+POLICY_VERSION='field-v6'
 FINANCIAL=re.compile(r'\b(?:PO\s*Amount|P\.?O\.?\s*(?:Amount|Value|Total)|Purchase\s*Order\s*Amount|Unit\s*(?:Rate|Price)|(?:Total|Extended)\s*(?:Price|Cost|Amount)|Sub\s*Payout|Emp\s*Payout|Invoice\s*Total)\b|[$£€]\s*\d',re.I)
 NTP=re.compile(r'\b(?:NTP|Notice\s+to\s+Proceed)\b',re.I)
 FACT_KEYS=('prism','workOrder','purchaseOrder','constructionType','coordinator','workOrderDate','estimatedCompletion','vendor','issuedBy','jobName','address','cityStateZip','siteContact','sitePhone','comments','permitNotice')
@@ -27,7 +27,7 @@ try:
  resource.setrlimit(resource.RLIMIT_CPU,(8,8))
  from pypdf import PdfReader
  reader=PdfReader(io.BytesIO(sys.stdin.buffer.read(8*1024*1024+1)))
- if len(reader.pages)>12:sys.exit(0)
+ if len(reader.pages)>60:sys.exit(0)
  parts=[];size=0
  for page in reader.pages:
   value=page.extract_text(extraction_mode='layout') or '';size+=len(value)
@@ -174,12 +174,10 @@ def classify(name, raw, ntp_source=False):
         return 'office','Original email or package retained by office'
     if ext=='.pdf':
         text=pdf_text(raw)
-        if len(text.strip())<30:
-            try:
-                text=scan_text(raw,pdf=True)
-            except Exception:return 'review','PDF could not be checked for NTP or pricing'
-        if document_is_private(text):return 'office','NTP or commercial source document'
-        return 'field','Technical PDF checked for NTP and pricing'
+        if ntp_facts(text):return 'office','Original NTP; pricing-free work order copy is released separately'
+        if re.search(r'First\s+Digital',text,re.I) and re.search(r'\b(?:Invoice|Unit\s+(?:Rate|Price)|Sub\s*Payout|Emp\s*Payout|Billing|Payroll)\b',text,re.I):return 'office','First Digital billing document'
+        if len(text.strip())>30 or re.search(r'after.?fiber|splice|as.?built|fiber.?map|design|drawing|technical|test.?result',name,re.I):return 'field','Technical job document; customer project-cost figures are permitted'
+        return 'review','Unreadable PDF requires office review'
     if ext in ('.jpg','.jpeg','.png','.webp','.gif','.heic'):
         if not ntp_source:return 'field','Field photo'
         try:text=image_text(raw)
@@ -230,12 +228,12 @@ def _sync_row(store,sid,rid,force=False):
         if raw is None and (is_ntp or ext not in ('.jpg','.jpeg','.png','.webp','.gif','.heic','.sor')):
             raw,_,_=store.download_attachment(sid,a['id'])
         prepared=False
-        if ext=='.pdf' and not re.search(r'\bNTP\b|rate.?card|billing|invoice|remittance|purchase.?order',a['name'],re.I):
+        if ext=='.pdf' and NTP.search(a['name']) and not re.search(r'rate.?card|billing|invoice|remittance',a['name'],re.I):
             try:
                 from field_pdf import prepare
                 clean,redactions=prepare(raw or b'')
-                mode,reason=('office','Pricing retained in office original; redacted field copy created') if redactions else ('field','Technical PDF checked for NTP and pricing')
-                if redactions:extracted.append((a['name'],clean))
+                mode,reason='office','Original NTP retained privately; pricing-free field work order created'
+                extracted.append(('Work-Order-'+normalize_id(values.get('Portal Work Order') or rid)+'.pdf',clean))
                 prepared=True
             except Exception:
                 mode,reason='review','PDF needs office review before field release'
@@ -281,7 +279,8 @@ def backfill(store,limit=1):
             values={cols.get(int(c['columnId'])):c.get('value','') for c in row['cells']}
             try:policy=json.loads(values.get(FILES_COLUMN) or '{}')
             except (ValueError,TypeError):policy={}
-            if policy.get('_version')==POLICY_VERSION:continue
+            attachment_ids={str(a['id']) for a in row.get('attachments',[])}
+            if policy.get('_version')==POLICY_VERSION and attachment_ids.issubset(policy):continue
             try:sync_row(store,sid,row['id'])
             except Exception:
                 import logging

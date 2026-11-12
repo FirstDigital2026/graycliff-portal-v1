@@ -35,7 +35,12 @@ def ocr_image(raw,folder,index):
     with Image.open(io.BytesIO(raw)) as im:
         if im.width*im.height>25000000:raise ValueError('Image exceeds bounded field review')
         im.convert('RGB').save(target)
-    result=subprocess.run(['node','--max-old-space-size=128',str(Path(__file__).with_name('field_ocr.cjs')),str(target)],capture_output=True,text=True,timeout=90,check=True)
+    def node_address_space():
+        import resource
+        # V8 reserves virtual address space far beyond its physical heap.
+        # Keep the PDF parser's limit out of the separate, heap-limited worker.
+        resource.setrlimit(resource.RLIMIT_AS,(resource.RLIM_INFINITY,resource.RLIM_INFINITY))
+    result=subprocess.run(['node','--max-old-space-size=128',str(Path(__file__).with_name('field_ocr.cjs')),str(target)],capture_output=True,text=True,timeout=90,check=True,preexec_fn=node_address_space)
     return target,json.loads(result.stdout)
 
 def sanitize(raw,folder):
@@ -46,7 +51,6 @@ def sanitize(raw,folder):
     changed=0;checked={}
     for page in doc:
         text=page.get_text()
-        if NTP.search(text):raise ValueError('Original NTP remains office-only')
         boxes=regions(page.get_text('words'))
         for box in boxes:page.add_redact_annot(fitz.Rect(box),fill=(1,1,1))
         if boxes:page.apply_redactions(images=0,graphics=0);changed+=len(boxes)
@@ -55,7 +59,6 @@ def sanitize(raw,folder):
             if xref in checked:continue
             info=doc.extract_image(xref);data=info['image']
             path,read=ocr_image(data,folder,xref)
-            if NTP.search(read['text']):raise ValueError('Original NTP image remains office-only')
             boxes=regions(read['words']);checked[xref]=True
             if boxes:
                 with Image.open(path) as im:
@@ -83,6 +86,6 @@ def prepare(raw):
 
 if __name__=='__main__':
     import resource
-    resource.setrlimit(resource.RLIMIT_AS,(240*1024*1024,240*1024*1024))
+    resource.setrlimit(resource.RLIMIT_AS,(240*1024*1024,resource.RLIM_INFINITY))
     root=Path(sys.argv[1]);out,n=sanitize((root/'source.pdf').read_bytes(),root)
     (root/'field.pdf').write_bytes(out);print(json.dumps({'redactions':n}))
