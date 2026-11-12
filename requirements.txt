@@ -4,3 +4,4 @@ APScheduler==3.11.0
 pypdf==5.9.0
 pypdfium2==5.14.0
 Pillow==12.3.0
+PyMuPDF>=1.24,<2

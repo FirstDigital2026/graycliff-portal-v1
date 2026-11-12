@@ -9,7 +9,7 @@ import graph_import as graph
 FACTS_COLUMN='Portal Field Instructions'
 FILES_COLUMN='Portal Field Files'
 REVIEW_COLUMN='Portal Field Document Review'
-POLICY_VERSION='field-v3'
+POLICY_VERSION='field-v4'
 FINANCIAL=re.compile(r'\b(?:PO\s*Amount|P\.?O\.?\s*(?:Amount|Value|Total)|Purchase\s*Order\s*Amount|Unit\s*(?:Rate|Price)|(?:Total|Extended)\s*(?:Price|Cost|Amount)|Sub\s*Payout|Emp\s*Payout|Invoice\s*Total)\b|[$£€]\s*\d',re.I)
 NTP=re.compile(r'\b(?:NTP|Notice\s+to\s+Proceed)\b',re.I)
 FACT_KEYS=('prism','workOrder','purchaseOrder','constructionType','coordinator','workOrderDate','estimatedCompletion','vendor','issuedBy','jobName','address','cityStateZip','siteContact','sitePhone','comments','permitNotice')
@@ -229,7 +229,18 @@ def _sync_row(store,sid,rid,force=False):
         raw=payloads.get(aid)
         if raw is None and (is_ntp or ext not in ('.jpg','.jpeg','.png','.webp','.gif','.heic','.sor')):
             raw,_,_=store.download_attachment(sid,a['id'])
-        mode,reason=classify(a['name'],raw or b'',is_ntp)
+        prepared=False
+        if ext=='.pdf' and not re.search(r'\bNTP\b|rate.?card|billing|invoice|remittance|purchase.?order',a['name'],re.I):
+            try:
+                from field_pdf import prepare
+                clean,redactions=prepare(raw or b'')
+                mode,reason=('office','Pricing retained in office original; redacted field copy created') if redactions else ('field','Technical PDF checked for NTP and pricing')
+                if redactions:extracted.append((a['name'],clean))
+                prepared=True
+            except Exception:
+                mode,reason='review','PDF needs office review before field release'
+                prepared=True
+        if not prepared:mode,reason=classify(a['name'],raw or b'',is_ntp)
         policy_map[aid]={'mode':mode,'reason':reason}
         if ext=='.eml':
             instructions=safe_text(email_text(raw or b''))
