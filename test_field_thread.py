@@ -100,6 +100,17 @@ class FieldThreadTests(unittest.TestCase):
             with self.assertRaises(mail.ThreadReview):
                 field.resolve(Store(), 'fake', self.event, self.base)
 
+    def test_mailbox_outage_is_retryable_not_a_missing_thread(self):
+        with patch.object(field, 'exact_record', side_effect=mail.graph.GraphImportError('503')):
+            with self.assertRaises(mail.graph.GraphImportError):
+                field.resolve(Store(), 'fake', self.event, self.base)
+
+    def test_failed_mailbox_does_not_block_another_verified_copy(self):
+        with patch.object(field, 'exact_record', side_effect=[mail.graph.GraphImportError('503'), {'conversationId':'verified'}]), \
+             patch.object(field, 'conversation_records', return_value=self.rows):
+            route = field.resolve(Store(), 'fake', self.event, self.base)
+        self.assertEqual(route['messageId'], '<latest@example.com>')
+
     def test_conversation_is_exact_and_never_silently_truncated(self):
         for response in ({'value': [], '@odata.nextLink': 'unchecked'},
                          {'value': [message('wrong', 'x@example.com', [], cid='other')]}):
