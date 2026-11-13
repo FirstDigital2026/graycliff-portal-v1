@@ -447,6 +447,8 @@ def prepare(store,db):
                 if ready:dispatch(db,e['eventId'],store)
             except ThreadReview as ex:
                 with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_THREAD_REVIEW',detail=? WHERE event_id=? AND state NOT IN ('ACCEPTED','DISPATCHING','UNCERTAIN','SUPERSEDED')",(str(ex),e['eventId']))
+            except graph.GraphImportError:
+                with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_ATTENTION',prepared_at=?,detail='Microsoft mailbox lookup is unavailable. This unsent update will retry automatically.' WHERE event_id=? AND sent_at IS NULL AND state IN ('NEW','NEEDS_ATTENTION')",(now(),e['eventId']))
             except Exception:
                 with db() as c:c.execute("UPDATE mail_event_outbox SET state='NEEDS_ATTENTION',prepared_at=?,detail='Preparation needs attention; no automatic retry of uncertain sends.' WHERE event_id=? AND state NOT IN ('UNCERTAIN','DISPATCHING','ACCEPTED')",(now(),e['eventId']))
         supersede_delivered_completion(db)

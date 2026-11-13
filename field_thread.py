@@ -78,16 +78,22 @@ def resolve(store, token, event, base):
     people = source['from'] + source['to'] + source['cc'] + base['from'] + base['to'] + base['cc']
     boxes = list(dict.fromkeys([a for a in people if a.endswith('@firstdigitalsc.com')] + [mail.SENDER]))[:8]
     identity = None
+    lookup_failed = False
     for box in boxes:
         # A mailbox can lack a forwarded copy; no body or broad subject search substitutes for it.
         try:
             record = exact_record(token, box, source['messageId'])
         except mail.graph.GraphImportError:
+            lookup_failed = True
             continue
         if record and record.get('conversationId'):
             identity = box, record['conversationId']
             break
     if identity is None:
+        if lookup_failed:
+            # An unavailable mailbox does not prove the thread is missing.
+            # Let the outbox retry preparation; never retry uncertain transport.
+            raise mail.graph.GraphImportError('Microsoft mailbox lookup is unavailable; the unsent field update needs another lookup.')
         raise mail.ThreadReview('The forwarded field-update conversation could not be verified. No recipients guessed.')
     target_subject = subject_key(base['subject'])
     candidates = []
